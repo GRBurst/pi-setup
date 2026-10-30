@@ -1,0 +1,2 @@
+# expect: /home/alice
+url = "git+file:///home/alice/src/x?ref=main";

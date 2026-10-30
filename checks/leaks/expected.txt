@@ -1,0 +1,3 @@
+# The ai-sandbox input URL until ai-sandbox is public. Switching it to github:
+# makes this entry stale and the scan fails: then delete this file.
+flake.nix:13:[git-ssh] git+ssh://

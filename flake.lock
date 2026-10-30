@@ -1,0 +1,127 @@
+{
+  "nodes": {
+    "ai-sandbox": {
+      "inputs": {
+        "home-manager": [
+          "home-manager"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1793355088,
+        "narHash": "sha256-agS0FZrtnH2Jx8JYDo7n+VHdytGiQys91lGerrJyRDQ=",
+        "ref": "refs/heads/main",
+        "rev": "e2ba35378a69b32cccf6397a12df797950abb5bb",
+        "revCount": 1,
+        "type": "git",
+        "url": "ssh://git@github.com/GRBurst/ai-sandbox"
+      },
+      "original": {
+        "type": "git",
+        "url": "ssh://git@github.com/GRBurst/ai-sandbox"
+      }
+    },
+    "home-manager": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1793124281,
+        "narHash": "sha256-KdGTOgYXgMDA/ymTV10yLMt9tOjz9EmTgnTvaD+bhe4=",
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "rev": "1e3ebeb683d055d1675d3f64e6d2b186cb2ee504",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "rev": "1e3ebeb683d055d1675d3f64e6d2b186cb2ee504",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1793110635,
+        "narHash": "sha256-dhoW6VgFWlaodSY5jrBn+CF2FLmaUvDVgM7+C7T2+NM=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "31ecbaca1bdefa45dffc409f0250bd8039ea0010",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "31ecbaca1bdefa45dffc409f0250bd8039ea0010",
+        "type": "github"
+      }
+    },
+    "pi-claude-auth": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792593323,
+        "narHash": "sha256-DX1N/DkSfND1sycKdwOTI6WkUY/vipoqwlcryry7umQ=",
+        "owner": "fdietze",
+        "repo": "pi-claude-auth",
+        "rev": "79972e362fa3d61b0bce4850fbb27e8927c35c6c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "fdietze",
+        "repo": "pi-claude-auth",
+        "rev": "79972e362fa3d61b0bce4850fbb27e8927c35c6c",
+        "type": "github"
+      }
+    },
+    "pi-question": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793071990,
+        "narHash": "sha256-BqDsEtoz4GJsI8NG9D/TH1gOPmJydta6q4QB7DT2p8U=",
+        "owner": "fdietze",
+        "repo": "pi-question",
+        "rev": "1f5e8cdf9f2f7cb197181ef53b4bc64ee42e1a76",
+        "type": "github"
+      },
+      "original": {
+        "owner": "fdietze",
+        "repo": "pi-question",
+        "rev": "1f5e8cdf9f2f7cb197181ef53b4bc64ee42e1a76",
+        "type": "github"
+      }
+    },
+    "pi-session-name": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791898675,
+        "narHash": "sha256-P7QtA2l1dM77yxrBksO7G2CBe22O82UTTZLXhBVUKKc=",
+        "owner": "fdietze",
+        "repo": "pi-session-name",
+        "rev": "96078fde560d4edc146a7051e950466806e7101e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "fdietze",
+        "repo": "pi-session-name",
+        "rev": "96078fde560d4edc146a7051e950466806e7101e",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "ai-sandbox": "ai-sandbox",
+        "home-manager": "home-manager",
+        "nixpkgs": "nixpkgs",
+        "pi-claude-auth": "pi-claude-auth",
+        "pi-question": "pi-question",
+        "pi-session-name": "pi-session-name"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

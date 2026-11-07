@@ -8,9 +8,8 @@
       url = "github:nix-community/home-manager/1e3ebeb683d055d1675d3f64e6d2b186cb2ee504";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # TODO(publish): github:GRBurst/ai-sandbox once ai-sandbox is public.
     ai-sandbox = {
-      url = "git+ssh://git@github.com/GRBurst/ai-sandbox";
+      url = "github:GRBurst/ai-sandbox";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
     };

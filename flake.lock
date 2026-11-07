@@ -10,17 +10,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1793355088,
-        "narHash": "sha256-agS0FZrtnH2Jx8JYDo7n+VHdytGiQys91lGerrJyRDQ=",
-        "ref": "refs/heads/main",
-        "rev": "e2ba35378a69b32cccf6397a12df797950abb5bb",
-        "revCount": 1,
-        "type": "git",
-        "url": "ssh://git@github.com/GRBurst/ai-sandbox"
+        "lastModified": 1794046344,
+        "narHash": "sha256-CmYTexd1zaf8UlhiFo/EUcs8bCQhZvqWPzMTOMBiO5o=",
+        "owner": "GRBurst",
+        "repo": "ai-sandbox",
+        "rev": "cffc18f93168e314aec747be0a15c825cbcc97f7",
+        "type": "github"
       },
       "original": {
-        "type": "git",
-        "url": "ssh://git@github.com/GRBurst/ai-sandbox"
+        "owner": "GRBurst",
+        "repo": "ai-sandbox",
+        "type": "github"
       }
     },
     "home-manager": {

@@ -7,8 +7,9 @@
 # CLAUDE_CONFIG_DIR = claudeAuth.dir, set on every profile extending the pi pack.
 # The default dir lies under ~/.pi, which the nolabs-ai/pi pack already grants rw and no other
 # pack does, so no grant is added; outside ~/.pi/agent, so pi never treats it as its own
-# state. Never a session variable: unsandboxed `claude` keeps ~/.claude. nono expands $HOME
-# in set_vars values.
+# state. Never a session variable: unsandboxed `claude` keeps ~/.claude. No other profile may point
+# CLAUDE_CONFIG_DIR at this dir (or under it); one with its own dir, such as the sandbox's
+# ~/.claude-sandbox, is fine. nono expands $HOME in set_vars values.
 {
   config,
   lib,

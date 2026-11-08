@@ -66,10 +66,34 @@
   sandboxOff = withDir {programs.aiSandbox.enable = false;};
   harnessOff = withDir {programs.aiSandbox.harnesses.pi.enable = false;};
   noIsolation = withDir {programs.aiSandbox.isolation.enable = false;};
+  # Planted: a non-pi profile that sets CLAUDE_CONFIG_DIR under pi's dir.
+  plantedDir = withDir {
+    programs.aiSandbox.harnesses.planted = {
+      profileName = "planted";
+      pack = "nolabs-ai/claude";
+      setVars.CLAUDE_CONFIG_DIR = "$HOME/.pi/claude/sub";
+    };
+  };
 
   piProfiles = h: lib.filterAttrs (_: p: p.extends == ["nolabs-ai/pi"]) (aiEmittedProfiles h);
   otherProfiles = h: lib.filterAttrs (_: p: p.extends != ["nolabs-ai/pi"]) (aiEmittedProfiles h);
   setVars = p: p.environment.set_vars or {};
+
+  # A Claude dir spelt with $HOME or ${HOME}, or with a trailing slash, is compared in its normal form.
+  normDir = d: lib.removeSuffix "/" (lib.replaceStrings ["\${HOME}" "$HOME"] [home home] d);
+  # d is pi's Claude dir or a dir under it.
+  inPiDir = h: d: let
+    p = normDir h.programs.pi.claudeAuth.dir;
+    n = normDir d;
+  in
+    n == p || lib.hasPrefix "${p}/" n;
+  # No profile of ps (of h) points CLAUDE_CONFIG_DIR at pi's Claude dir; a profile with its own dir is fine.
+  noPiDirShared = h: ps:
+    lib.all (p: let
+      d = (setVars p).CLAUDE_CONFIG_DIR or null;
+    in
+      d == null || !(inPiDir h d))
+    (lib.attrValues ps);
 
   # The Claude dir is inside the pack's ~/.pi grant, or granted read+write on the profile.
   dirGranted = h: p: let
@@ -166,17 +190,23 @@ in
       message = "claude-auth: a dir that is neither absolute nor under $HOME/ is refused (while claudeAuth is on); an absolute dir is accepted and is its own credentialsFile prefix";
     }
     {
-      # Claude Code outside pi keeps ~/.claude: no other profile, no session variable.
+      # Claude Code outside pi must not use pi's Claude dir: no other profile points CLAUDE_CONFIG_DIR at it (or under
+      # it), and no session variable sets CLAUDE_CONFIG_DIR. A profile with its own dir (the sandbox's ~/.claude-sandbox) is fine.
       condition =
-        lib.all (p: !((setVars p) ? CLAUDE_CONFIG_DIR)) (lib.attrValues (otherProfiles on))
+        noPiDirShared on (otherProfiles on)
         && !(on.home.sessionVariables ? CLAUDE_CONFIG_DIR);
-      message = "claude-auth: no non-pi profile and no session variable redirects Claude Code's config dir";
+      message = "claude-auth: no non-pi profile points CLAUDE_CONFIG_DIR at pi's Claude dir (or under it), and no session variable sets CLAUDE_CONFIG_DIR";
+    }
+    {
+      # Negative case: the row above fails on a planted non-pi profile that sets CLAUDE_CONFIG_DIR under pi's dir.
+      condition = !(noPiDirShared plantedDir (otherProfiles plantedDir)) && noPiDirShared on (otherProfiles on);
+      message = "claude-auth: the pi-dir sharing check rejects a non-pi profile that sets CLAUDE_CONFIG_DIR under pi's dir, and accepts the sandbox's own dir";
     }
     {
       condition =
-        lib.all (p: !((setVars p) ? CLAUDE_CONFIG_DIR)) (lib.attrValues (aiEmittedProfiles authOff))
+        noPiDirShared authOff (aiEmittedProfiles authOff)
         && login authOff == null;
-      message = "claude-auth: with claudeAuth.enable = false no profile sets CLAUDE_CONFIG_DIR and there is no pi-claude-login";
+      message = "claude-auth: with claudeAuth.enable = false no profile points CLAUDE_CONFIG_DIR at pi's Claude dir and there is no pi-claude-login";
     }
     {
       condition =
@@ -226,14 +256,14 @@ in
         far = piFixtureWith {programs.pi.claudeAuth.dir = "$HOME/.config/pi-claude";};
       in
         !d.programs.pi.claudeAuth.setConfigDir
-        && lib.all (p: !((setVars p) ? CLAUDE_CONFIG_DIR)) (lib.attrValues (aiEmittedProfiles d))
+        && noPiDirShared d (aiEmittedProfiles d)
         && login d == null
         && !(far.home.activation ? piClaudeDir)
         && !(lib.any (p: lib.elem "$HOME/.config/pi-claude" (p.filesystem.allow or [])) (lib.attrValues (aiEmittedProfiles far)))
         && d.programs.pi.claudeAuth.credentialsFile == "${home}/.claude/.credentials.json"
         && far.programs.pi.claudeAuth.credentialsFile == "${home}/.claude/.credentials.json"
         && d.programs.pi.extensions ? claude-auth;
-      message = "claude-auth: with setConfigDir off (the default) no profile sets CLAUDE_CONFIG_DIR or grants a Claude dir, there is no pi-claude-login or Claude dir activation, credentialsFile is under ~/.claude and the extension stays";
+      message = "claude-auth: with setConfigDir off (the default) no profile points CLAUDE_CONFIG_DIR at pi's Claude dir or grants a Claude dir, there is no pi-claude-login or Claude dir activation, credentialsFile is under ~/.claude and the extension stays";
     }
     {
       # What this module could add to the sandbox's pi pack by default is nothing: with the settings file left to pi as well, the

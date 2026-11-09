@@ -3,8 +3,9 @@
 # session (a container); it works the same where both exist. No service and no unit:
 # `pi-searx-up` starts it when nothing answers on the port (idempotent; state, pid, log and
 # the per-user secret under `$XDG_STATE_HOME/pi-searx`, see ../../scripts/pi-searx.sh),
-# `pi-searx-down` stops the instance it started, and the `pi` and `pi_nono` aliases run
-# wrappers that call `pi-searx-up` before the sandboxed pi.
+# `pi-searx-down` stops the instance it started, and the pre-start hook of ai-sandbox's pi
+# harness (`programs.aiSandbox.harnesses.pi.preStart`) calls `pi-searx-up` before the
+# sandboxed pi in `pi`, `pi_nono`, the variants and their `_nono` twins.
 #
 # SearXNG runs outside the sandbox. pi reaches it over loopback TCP, which nothing in the
 # way restricts: the pi pack's nono network policy is `block: false` with no proxy (so no
@@ -18,8 +19,6 @@
 }: let
   pcfg = config.programs.pi;
   cfg = pcfg.search.local;
-  scfg = config.programs.aiSandbox;
-  isolationEnabled = scfg.enable && scfg.isolation.enable;
 
   url = "http://127.0.0.1:${toString cfg.port}";
   placeholder = "@PI_SEARX_SECRET@";
@@ -73,58 +72,34 @@
   up = script "up";
   down = script "down";
 
-  # The aliases' own command lines. `pi` is what ai-sandbox renders for the pi harness;
-  # ai-sandbox renders its nono-only twin `pi_nono` too but exposes no render of it while
-  # the isolation is on: it is the same line without the isolation wrapper's argv. The check
-  # search-local pins both against ai-sandbox's aliases, so a change of that shape fails there
-  # and, here, at evaluation.
-  wrapped = scfg.enable && scfg.harnessProfiles ? pi;
-  profile = scfg.harnessProfiles.pi;
-  piCommand = scfg.render.command {
-    command = "pi";
-    inherit profile;
-    alias = "pi";
-  };
-  isolationArgv = "exec ai-sandbox-run --nono-alias pi_nono --open-urls-profile ${profile} -- nono ";
-  nonoCommand =
-    if lib.hasInfix isolationArgv piCommand
-    then builtins.replaceStrings [isolationArgv] ["exec nono "] piCommand
-    else throw "pi-setup: programs.pi.search.local cannot derive the pi_nono command line from ai-sandbox's render.command (no '${isolationArgv}' in it); the alias shape changed";
-  commands =
-    lib.optionalAttrs wrapped ({pi = piCommand;}
-      // lib.optionalAttrs isolationEnabled {pi_nono = nonoCommand;});
-
-  # `<alias>-with-search`: pi-searx-up (a failure costs web search, never pi; off stdin, which
-  # holds a prompt piped into pi), the URL (also a session variable, which a shell without Home
-  # Manager's session file lacks), then the line. With reuseExisting off, a refused (or failed)
-  # pi-searx-up leaves pi without the variable, so a server this module did not start is not
-  # used by the back door.
-  wrapper = alias: command:
-    pkgs.writeShellApplication {
-      name = "${alias}-with-search";
-      runtimeInputs = [up scfg.package] ++ lib.optional (alias == "pi" && isolationEnabled) scfg.runPackage;
-      text = ''
-        ${
-          if refuseForeign && isLocalUrl pcfg.search.searxUrl
-          then ''
-            if pi-searx-up </dev/null; then
-              export PI_SEARX_URL=${lib.escapeShellArg pcfg.search.searxUrl}
-            else
-              unset PI_SEARX_URL
-            fi''
-          else ''
-            pi-searx-up </dev/null || true
-            ${lib.optionalString (pcfg.search.searxUrl != null) "export PI_SEARX_URL=${lib.escapeShellArg pcfg.search.searxUrl}"}''
-        }
-        ${command} "$@"
-      '';
-    };
+  # Sourced by every alias of the pi harness (pi, pi_nono, the variants and their twins),
+  # outside the sandbox, before it starts (ai-sandbox's `harnesses.<name>.preStart`; POSIX
+  # sh, stdin /dev/null, stdout on stderr, a failing command never stops pi). A failure of
+  # pi-searx-up costs web search, never pi. It runs with TMPDIR unset: the alias gives pi a
+  # per-CLI TMPDIR that the sandboxed pi can write, and the long-lived SearXNG daemon
+  # (setsid) would inherit it. With reuseExisting off, a refused (or failed) pi-searx-up
+  # leaves pi without the variable, so a server this module did not start is not used by
+  # the back door. Store paths are absolute: the hook runs with the user's PATH.
+  upCommand = "${lib.getExe' pkgs.coreutils "env"} -u TMPDIR ${lib.getExe up}";
+  preStart =
+    if refuseForeign && isLocalUrl pcfg.search.searxUrl
+    then ''
+      if ${upCommand}; then
+        export PI_SEARX_URL=${lib.escapeShellArg pcfg.search.searxUrl}
+      else
+        unset PI_SEARX_URL
+      fi
+    ''
+    else ''
+      ${upCommand} || true
+      ${lib.optionalString (pcfg.search.searxUrl != null) "export PI_SEARX_URL=${lib.escapeShellArg pcfg.search.searxUrl}"}
+    '';
 in {
   options.programs.pi.search.local = {
     enable = lib.mkEnableOption ''
       an on-demand SearXNG on 127.0.0.1 for a web-search extension that reads `PI_SEARX_URL`,
-      without NixOS or systemd: `pi-searx-up`, `pi-searx-down`, and the `pi`/`pi_nono` aliases
-      starting it first. Sets `search.searxUrl` (mkDefault) to `http://127.0.0.1:<port>`
+      without NixOS or systemd: `pi-searx-up`, `pi-searx-down`, and the pi aliases (`pi`,
+      `pi_nono`, variants) starting it first through ai-sandbox's pre-start hook. Sets `search.searxUrl` (mkDefault) to `http://127.0.0.1:<port>`
     '';
 
     port = lib.mkOption {
@@ -146,7 +121,7 @@ in {
         its results as they come, and on a machine with other users any of them may have
         bound the port first. The default is on because the NixOS SearXNG on the same port
         runs as another user and has to be reusable. Off, `pi-searx-up` fails when something
-        it did not start answers (and says so), and the `pi` wrappers then start pi without
+        it did not start answers (and says so), and the pi aliases then start pi without
         `PI_SEARX_URL`, that is without search.
       '';
     };
@@ -180,14 +155,6 @@ in {
       default = rendered;
       description = "The settings.yml template as data; its secret_key is the placeholder pi-searx-up replaces.";
     };
-
-    commands = lib.mkOption {
-      type = with lib.types; attrsOf str;
-      internal = true;
-      readOnly = true;
-      default = commands;
-      description = "The command line each wrapper runs after pi-searx-up, by alias.";
-    };
   };
 
   config = lib.mkIf (pcfg.enable && cfg.enable) {
@@ -212,9 +179,10 @@ in {
         }
       ];
 
-    home.packages = [up down] ++ lib.mapAttrsToList wrapper commands;
+    home.packages = [up down];
 
-    # Over ai-sandbox's generated aliases (mkDefault), under a consumer's own extraAliases.
-    programs.aiSandbox.extraAliases = lib.mapAttrs (alias: _: lib.mkOverride 900 "${alias}-with-search") commands;
+    # Every generated alias of the pi harness sources it; with the sandbox or the harness off
+    # there is no alias and no hook file.
+    programs.aiSandbox.harnesses.pi.preStart = preStart;
   };
 }

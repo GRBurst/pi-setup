@@ -171,10 +171,10 @@ no default. `extensions.<name>.*` describes one registry entry.
 | `linkExtensions` | `true` | Link the registry and assert its entries exist. The economics bridge sets it to `false` and forwards the registry. |
 | `package` | `null` | The pi package, installed when non-null (a consumer may install pi itself). |
 | `router.localHealthUrl` | `null` | Health URL of the local model's server, set as the task router's `qwen-local` health by the economics bridge; `null` leaves the router settings alone. |
-| `search.local.enable` | `false` | An on-demand SearXNG on `127.0.0.1` without NixOS or systemd: `pi-searx-up`, `pi-searx-down`, and the `pi`/`pi_nono` aliases starting it first (see Local search without NixOS). Sets `search.searxUrl` (mkDefault) to `http://127.0.0.1:<port>`. |
+| `search.local.enable` | `false` | An on-demand SearXNG on `127.0.0.1` without NixOS or systemd: `pi-searx-up`, `pi-searx-down`, and the `pi` aliases (`pi`, `pi_nono`, variants) starting it first through ai-sandbox's `preStart` hook (see Local search without NixOS). Sets `search.searxUrl` (mkDefault) to `http://127.0.0.1:<port>`. |
 | `search.local.package` | `pkgs.searxng` | The SearXNG package; its main program serves the rendered settings. |
 | `search.local.port` | `8888` | Loopback port. Whatever already answers `/healthz` there is reused instead of started (logged as such) and left alone by `pi-searx-down`; see `reuseExisting`. |
-| `search.local.reuseExisting` | `true` | Reuse a server on the port that `pi-searx-up` did not start. A trust decision, see Local search without NixOS. `false`: `pi-searx-up` fails when it finds one, and the `pi` wrappers start pi without `PI_SEARX_URL`, so without search. |
+| `search.local.reuseExisting` | `true` | Reuse a server on the port that `pi-searx-up` did not start. A trust decision, see Local search without NixOS. `false`: `pi-searx-up` fails when it finds one, and the `pi` aliases start pi without `PI_SEARX_URL`, so without search. |
 | `search.local.settings` | `{ }` | SearXNG settings merged key by key over the base: upstream defaults with their engines (`use_default_settings = true`), limiter off, `search.formats = [ "html" "json" ]`. `search.formats` must keep `json`; `server.bind_address` (`127.0.0.1`), `server.port` and `server.secret_key` (per user, at the first start) are the module's. |
 | `search.searxUrl` | `null`; `http://127.0.0.1:<port>` with `search.local.enable` | The SearXNG instance for the built-in `web_search` (`builtinExtensions.webSearch.enable`) or any extension that reads `PI_SEARX_URL`, exported as that variable; `null` sets no variable. Derive it from the instance that actually runs, never from a literal. |
 | `settings.manage` | `true` | Manage `<agentDir>/settings.json`: the out-of-store link to `settings.stateFile`, the one-time seed, the reclaim of a file pi overwrote and the state-file grant. `false` leaves the file to pi alone and the economics bridge refuses it. |
@@ -310,14 +310,19 @@ programs.pi.search.local.enable = true; # port 8888, pkgs.searxng
   could read the queries and feed the agent results of their choosing. The default is to
   reuse, because the NixOS SearXNG on the same port runs as another user. On a machine
   with other users set `search.local.reuseExisting = false`: `pi-searx-up` then fails with a
-  message when the port is held by a server it did not start, and the `pi` wrappers start
+  message when the port is held by a server it did not start, and the `pi` aliases start
   pi without `PI_SEARX_URL`, so without search. (A less common `port` only lowers the
   odds; any user can bind a free one first.)
-- The `pi` and `pi_nono` aliases run `pi-with-search` and `pi_nono-with-search`:
-  `pi-searx-up` first (a failure costs web search, never pi), then the alias's usual
-  sandboxed command. With `programs.aiSandbox.isolation.enable = false` there is only
-  `pi`. A `pi` you set in `programs.aiSandbox.extraAliases` wins; other aliases of the pi
-  harness (variants) do not start it, so run `pi-searx-up` before them.
+- The module sets `programs.aiSandbox.harnesses.pi.preStart`, ai-sandbox's pre-start hook.
+  Every alias of the pi harness (`pi`, `pi_nono`, every variant and their `_nono` twins)
+  sources it, outside the sandbox, before the sandboxed command: `pi-searx-up` (a failure
+  costs web search, never pi), then `export PI_SEARX_URL`. There are no wrapper commands,
+  and the aliases are ai-sandbox's own lines. With
+  `programs.aiSandbox.isolation.enable = false` there is only `pi`. A `pi` you set in
+  `programs.aiSandbox.extraAliases` is your text and runs no hook. The hook starts
+  `pi-searx-up` with `TMPDIR` unset: pi's own per-CLI `TMPDIR` is writable by the sandboxed
+  pi, and the SearXNG daemon outlives it. Another module's `preStart` for pi merges with
+  this one (`lib.mkAfter` / `lib.mkBefore` order it).
 - State lives in `$XDG_STATE_HOME/pi-searx` (default `~/.local/state/pi-searx`, mode 0700):
   `secret` (generated once, 0600, never in the store), `settings.yml` (0600, rendered at
   every start), `pid`, `log`, `source` (the template and executable of the running

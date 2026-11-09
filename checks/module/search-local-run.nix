@@ -1,7 +1,7 @@
 # The scripts of the on-demand SearXNG (`search.local`), run: the module's own pi-searx-up,
-# pi-searx-down and pi_nono-with-search, over the real `pkgs.searxng`, inside the build
-# sandbox (no network: /healthz and an empty JSON search on loopback only). Wired by
-# ./default.nix as pi-setup-search-local-run.
+# pi-searx-down and the pre-start hook of the `pi_nono` alias (ai-sandbox's), over the real
+# `pkgs.searxng`, inside the build sandbox (no network: /healthz and an empty JSON search on
+# loopback only). Wired by ./default.nix as pi-setup-search-local-run.
 {
   lib,
   pkgs,
@@ -24,14 +24,17 @@
     };
   };
   strictPkg = n: lib.findFirst (p: p.name == n) (throw "search-local-run: no strict package ${n}") strict.home.packages;
+  # An alias as a file `runalias` sources; the alias is ai-sandbox's own line, hook included.
+  aliasFile = name: c: pkgs.writeText "alias-${name}" "alias pi_nono=${lib.escapeShellArg c.home.shellAliases.pi_nono}\n";
 in
   pkgs.runCommand "pi-setup-search-local-run" {
     nativeBuildInputs =
-      map pkg ["pi-searx-up" "pi-searx-down" "pi_nono-with-search"]
+      map pkg ["pi-searx-up" "pi-searx-down"]
       ++ [pkgs.curl pkgs.jq pkgs.iproute2 pkgs.coreutils pkgs.gnugrep pkgs.python3 pkgs.util-linux];
     inherit port;
     strictUp = "${strictPkg "pi-searx-up"}/bin/pi-searx-up";
-    strictWrapper = "${strictPkg "pi_nono-with-search"}/bin/pi_nono-with-search";
+    aliasDefault = aliasFile "default" home;
+    aliasStrict = aliasFile "strict" strict;
     profile = home.programs.aiSandbox.harnessProfiles.pi;
   } ''
     export HOME=$PWD/home XDG_STATE_HOME=$PWD/state
@@ -41,6 +44,9 @@ in
     export HTTP_PROXY=$http_proxy HTTPS_PROXY=$http_proxy all_proxy=$ALL_PROXY
     unset no_proxy NO_PROXY
     mkdir -p "$HOME"
+    # pi's own per-CLI TMPDIR, as ai-sandbox's alias sets it: the daemon must not inherit it.
+    export TMPDIR=$PWD/tmp
+    mkdir -p "$TMPDIR"
     state=$XDG_STATE_HOME/pi-searx
     url=http://127.0.0.1:$port
     fail() {
@@ -126,25 +132,53 @@ in
     kill "$holder"
     wait "$holder" 2>/dev/null || true
 
-    # 4. The wrapper starts SearXNG before the sandboxed pi and passes the arguments and stdin
+    # 4. The pi_nono alias (ai-sandbox's own line) sources the hook, which starts SearXNG before
+    #    the sandboxed pi, with TMPDIR unset for the daemon, and passes the arguments and stdin
     #    through (a fake nono records what it got; the nono-only line needs no namespaces).
+    cat >runalias <<'EOF'
+    shopt -s expand_aliases
+    . "$1"
+    shift
+    pi_nono "$@"
+    EOF
     mkdir fake
     cat >fake/nono <<'EOF'
     #!/bin/sh
     if curl --noproxy '*' -fsS -m 2 -o /dev/null "http://127.0.0.1:$port/healthz"; then echo "searx: up"; else echo "searx: down"; fi
     echo "PI_SEARX_URL=$PI_SEARX_URL"
+    echo "TMPDIR=$TMPDIR"
     echo "argv: $*"
     echo "stdin: $(cat)"
     EOF
     chmod +x fake/nono
-    echo prompt | PATH=$PWD/fake:$PATH pi_nono-with-search --version a\ b >wrapped.out 2>wrapped.err || fail "pi_nono-with-search failed: $(cat wrapped.err)"
-    grep -qx "stdin: prompt" wrapped.out || fail "a prompt piped into the wrapper did not reach pi: $(cat wrapped.out)"
-    grep -qx "searx: up" wrapped.out || fail "SearXNG did not answer when the wrapper ran nono: $(cat wrapped.out)"
-    grep -qx "PI_SEARX_URL=$url" wrapped.out || fail "the wrapper did not export PI_SEARX_URL=$url"
-    grep -qF "argv: run --profile $profile " wrapped.out || fail "the wrapper did not run nono with the pi profile: $(cat wrapped.out)"
-    grep -qF -- "-- pi --version a b" wrapped.out || fail "the wrapper did not pass the arguments to pi: $(cat wrapped.out)"
+    echo prompt | PATH=$PWD/fake:$PATH bash runalias "$aliasDefault" --version a\ b >wrapped.out 2>wrapped.err || fail "the pi_nono alias failed: $(cat wrapped.err)"
+    grep -qx "stdin: prompt" wrapped.out || fail "a prompt piped into the alias did not reach pi: $(cat wrapped.out)"
+    grep -qx "searx: up" wrapped.out || fail "SearXNG did not answer when the alias ran nono: $(cat wrapped.out)"
+    grep -qx "PI_SEARX_URL=$url" wrapped.out || fail "the hook did not export PI_SEARX_URL=$url"
+    grep -qx "TMPDIR=$TMPDIR/pi/tmp" wrapped.out || fail "pi did not get its per-CLI TMPDIR: $(cat wrapped.out)"
+    grep -qF "argv: run --profile $profile " wrapped.out || fail "the alias did not run nono with the pi profile: $(cat wrapped.out)"
+    grep -qF -- "-- pi --version a b" wrapped.out || fail "the alias did not pass the arguments to pi: $(cat wrapped.out)"
+    [ -d "$TMPDIR/pi/tmp" ] || fail "the alias made no per-CLI TMPDIR"
+    daemon=$(cat "$state/pid")
+    if tr '\0' '\n' <"/proc/$daemon/environ" | grep -q '^TMPDIR='; then fail "the SearXNG daemon inherited TMPDIR: $(tr '\0' '\n' <"/proc/$daemon/environ" | grep '^TMPDIR=')"; fi
     pi-searx-down 2>/dev/null
-    portfree || fail "the port is still held after pi-searx-down of the wrapper's instance"
+    portfree || fail "the port is still held after pi-searx-down of the alias's instance"
+
+    # 4b. A daemon the hook cold-starts holds none of the alias's descriptors: `pi 2>&1 | cat`
+    #     (stdout and stderr on the same pipe) ends with pi, not with SearXNG.
+    start=$SECONDS
+    PATH=$PWD/fake:$PATH timeout 40 bash runalias "$aliasDefault" -p hi </dev/null 2>&1 | timeout 40 cat >piped.out \
+      || fail "the piped alias failed or hung: $(cat piped.out)"
+    [ $((SECONDS - start)) -lt 30 ] || fail "pi 2>&1 | cat waited $((SECONDS - start)) s: the daemon holds the pipe"
+    grep -qx "searx: up" piped.out || fail "the piped alias did not start SearXNG first: $(cat piped.out)"
+    answers || fail "the daemon did not outlive pi"
+    kill -0 "$(cat "$state/pid")" || fail "the pid file names no running process after the piped alias"
+    for fd in /proc/"$(cat "$state/pid")"/fd/*; do
+      case $(readlink "$fd") in pipe:* | socket:*) ;; *) continue ;; esac
+      case $(basename "$fd") in 0 | 1 | 2 | 9) fail "the daemon holds fd $(basename "$fd") as $(readlink "$fd")" ;; esac
+    done
+    pi-searx-down 2>/dev/null
+    portfree || fail "the port is still held after pi-searx-down of the piped alias's instance"
 
     # 5. Whatever already answers /healthz on the port is reused, logged as such, and left
     #    alone by pi-searx-down.
@@ -165,29 +199,29 @@ in
     answers || fail "pi-searx-down stopped an instance it did not start"
 
     # 5b. reuseExisting = false: the foreign server is refused (nothing started), and the
-    #     wrapper starts pi without PI_SEARX_URL, whatever the caller had set.
+    #     hook starts pi without PI_SEARX_URL, whatever the caller had set.
     if "$strictUp" 2>up5.err; then fail "pi-searx-up with reuseExisting = false reused a foreign server"; fi
     grep -q "refusing" up5.err || fail "the refusal is not explained: $(cat up5.err)"
     [ ! -e "$state/pid" ] || fail "a refusal left a pid file"
     answers || fail "a refusal stopped the foreign server"
-    PI_SEARX_URL=ambient PATH=$PWD/fake:$PATH "$strictWrapper" </dev/null >wrapped3.out 2>/dev/null || fail "the strict wrapper stopped pi on a refusal"
+    PI_SEARX_URL=ambient PATH=$PWD/fake:$PATH bash runalias "$aliasStrict" </dev/null >wrapped3.out 2>/dev/null || fail "the strict alias stopped pi on a refusal"
     grep -qx "PI_SEARX_URL=" wrapped3.out || fail "pi was given PI_SEARX_URL beside a refused server: $(cat wrapped3.out)"
     kill "$foreign"
     wait "$foreign" 2>/dev/null || true
 
-    # 5c. Nothing on the port any more: the strict wrapper starts its own instance and exports
+    # 5c. Nothing on the port any more: the strict alias's hook starts its own instance and exports
     #     the URL; that ends the foreign state (the next foreign server is reported again).
     portfree || fail "the port is held after the foreign server was killed"
     [ -e "$state/foreign" ] || fail "the foreign marker is gone before the foreign server was"
-    PATH=$PWD/fake:$PATH "$strictWrapper" </dev/null >wrapped4.out 2>/dev/null || fail "the strict wrapper failed on a free port"
-    grep -qx "searx: up" wrapped4.out || fail "the strict wrapper did not start SearXNG: $(cat wrapped4.out)"
-    grep -qx "PI_SEARX_URL=$url" wrapped4.out || fail "the strict wrapper did not export the URL for its own instance"
+    PATH=$PWD/fake:$PATH bash runalias "$aliasStrict" </dev/null >wrapped4.out 2>/dev/null || fail "the strict alias failed on a free port"
+    grep -qx "searx: up" wrapped4.out || fail "the strict alias did not start SearXNG: $(cat wrapped4.out)"
+    grep -qx "PI_SEARX_URL=$url" wrapped4.out || fail "the strict alias did not export the URL for its own instance"
     [ ! -e "$state/foreign" ] || fail "starting its own instance left the foreign marker"
     pi-searx-down 2>/dev/null
-    portfree || fail "the port is still held after pi-searx-down of the strict wrapper's instance"
+    portfree || fail "the port is still held after pi-searx-down of the strict alias's instance"
 
     # 6. A port taken by something that is no SearXNG: pi-searx-up fails fast and names the
-    #    log, and the wrapper still starts pi.
+    #    log, and the alias still starts pi.
     python3 -c 'import socket, time
     s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("127.0.0.1", '"$port"')); s.listen(1); time.sleep(600)' &
@@ -199,8 +233,8 @@ in
     [ $((SECONDS - start)) -lt 15 ] || fail "pi-searx-up took $((SECONDS - start)) s to give up on a dead start"
     grep -qF "$state/log" up4.err || fail "the failure does not name the log: $(cat up4.err)"
     [ ! -e "$state/pid" ] || fail "a failed start left the pid file"
-    PATH=$PWD/fake:$PATH pi_nono-with-search </dev/null >wrapped2.out 2>/dev/null || fail "a failed pi-searx-up stopped the wrapper"
-    grep -qx "searx: down" wrapped2.out || fail "the wrapper did not reach nono after a failed start"
+    PATH=$PWD/fake:$PATH bash runalias "$aliasDefault" </dev/null >wrapped2.out 2>/dev/null || fail "a failed pi-searx-up stopped the alias"
+    grep -qx "searx: down" wrapped2.out || fail "the alias did not reach nono after a failed start"
     kill "$blocker"
 
     touch "$out"

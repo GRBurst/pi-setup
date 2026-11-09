@@ -1,9 +1,10 @@
 # The on-demand loopback SearXNG (`search.local`) as data: the option tree, the settings
 # template (JSON on, loopback bind, the secret a placeholder), the URL default, the scripts
-# and the `pi`/`pi_nono` wrappers. Wired by ./default.nix as pi-setup-search-local; the
-# scripts themselves run in ./search-local-run.nix.
+# and the pre-start hook of ai-sandbox's pi harness. Wired by ./default.nix as
+# pi-setup-search-local; the scripts themselves run in ./search-local-run.nix.
 {
   lib,
+  pkgs,
   piLib,
 }: let
   inherit (piLib) mkAssertionCheck piFixtureWith piFailsWith;
@@ -24,22 +25,21 @@
   url = "http://127.0.0.1:8888";
   placeholder = "@PI_SEARX_SECRET@";
   rendered = c: c.programs.pi.search.local.renderedSettings;
-  commands = c: c.programs.pi.search.local.commands;
+  hookFile = c: c.programs.aiSandbox.internal.preStartFiles.pi;
+  # String context off: hasInfix matches by regex, which refuses a store path.
+  noCtx = builtins.unsafeDiscardStringContext;
+  hookText = c: noCtx (hookFile c).text;
+  envExe = noCtx (lib.getExe' pkgs.coreutils "env");
+  upExe = c: noCtx (lib.getExe (pkg c "pi-searx-up"));
+  # The segment ai-sandbox puts in every alias of the harness.
+  segment = c: noCtx "{ . ${hookFile c} || :; }";
+  aliasNames = ["pi" "pi_nono"];
+  hooked = c: lib.all (n: lib.hasInfix (segment c) (noCtx c.home.shellAliases.${n})) aliasNames;
   names = c: map (p: p.name) c.home.packages;
   has = c: n: lib.elem n (names c);
   pkg = c: n: lib.findFirst (p: p.name == n) (throw "search-local: no package ${n}") c.home.packages;
   scripts = ["pi-searx-up" "pi-searx-down"];
   wrappers = ["pi-with-search" "pi_nono-with-search"];
-
-  # The wrapper runs pi-searx-up (never fatal, off stdin: a piped prompt is pi's), exports the
-  # URL, then the alias's own line.
-  wrapperRuns = c: name: command:
-    lib.hasInfix ''
-      pi-searx-up </dev/null || true
-      export PI_SEARX_URL=${lib.escapeShellArg c.programs.pi.search.searxUrl}
-      ${command} "$@"
-    ''
-    (pkg c name).text;
 
   merged = rendered (on {
     programs.pi.search.local.settings = {
@@ -55,6 +55,7 @@ in
         !plain.programs.pi.search.local.enable
         && plain.programs.pi.search.searxUrl == null
         && lib.all (n: !(has plain n)) (scripts ++ wrappers)
+        && plain.programs.aiSandbox.internal.preStartFiles == {}
         && (piFixtureWith {programs.pi.search.local.port = 9999;}).home.shellAliases == plain.home.shellAliases;
       message = "search-local: off by default; its other options alone change no alias, URL or package";
     }
@@ -124,58 +125,74 @@ in
       message = "search-local: search.formats may grow but must keep json (pi's backend asks for format=json; without it SearXNG answers 403)";
     }
     {
-      condition = lib.all (has local) (scripts ++ wrappers);
-      message = "search-local: enabled with the sandbox and its isolation, it installs pi-searx-up, pi-searx-down, pi-with-search and pi_nono-with-search";
+      condition = lib.all (has local) scripts && lib.all (n: !(has local n)) wrappers;
+      message = "search-local: enabled, it installs pi-searx-up and pi-searx-down and no pi-with-search or pi_nono-with-search wrapper";
     }
     {
-      condition = local.home.shellAliases.pi == "pi-with-search" && local.home.shellAliases.pi_nono == "pi_nono-with-search";
-      message = "search-local: the pi and pi_nono aliases run the wrappers";
+      # The hook is ai-sandbox's: the aliases are its own lines (plain's, plus the segment),
+      # not a wrapper's name, and nothing of this module overrides them.
+      condition =
+        local.programs.aiSandbox.internal.preStartFiles ? pi
+        && hooked local
+        && !(plain.home.shellAliases.pi == local.home.shellAliases.pi)
+        && lib.all (n: lib.hasInfix "exec " local.home.shellAliases.${n} && !(lib.hasInfix "with-search" local.home.shellAliases.${n})) aliasNames
+        && lib.all (n: lib.hasInfix "-- pi " local.home.shellAliases.${n}) aliasNames
+        && local.programs.aiSandbox.extraAliases == {};
+      message = "search-local: enabled, the pi and pi_nono aliases are ai-sandbox's own and source the pi pre-start hook (no wrapper, no extraAliases)";
     }
     {
-      # The wrappers run exactly what ai-sandbox's aliases hold without local search: the
-      # nono-only line of pi_nono is derived from render.command and must not drift from it.
-      condition = commands local == {inherit (plain.home.shellAliases) pi pi_nono;};
-      message = "search-local: the wrappers' command lines equal ai-sandbox's own pi and pi_nono aliases";
+      # pi-searx-up runs from the hook with pi's per-CLI TMPDIR unset: the daemon outlives pi
+      # and must not keep a directory the sandboxed pi can write. The URL is exported for pi.
+      condition =
+        lib.hasInfix "${envExe} -u TMPDIR ${upExe local}" (hookText local)
+        && lib.hasInfix "export PI_SEARX_URL=${lib.escapeShellArg url}" (hookText local)
+        && !(lib.hasInfix "unset PI_SEARX_URL" (hookText local));
+      message = "search-local: the hook starts pi-searx-up with TMPDIR unset (a daemon must not keep pi's TMPDIR), never fatally, and exports PI_SEARX_URL";
     }
     {
       condition =
-        wrapperRuns local "pi-with-search" plain.home.shellAliases.pi
-        && wrapperRuns local "pi_nono-with-search" plain.home.shellAliases.pi_nono;
-      message = "search-local: each wrapper runs pi-searx-up (never fatal, stdin left to pi), exports PI_SEARX_URL, then its alias's line with the arguments";
-    }
-    {
-      condition =
-        localIsoOff.home.shellAliases.pi
-        == "pi-with-search"
+        localIsoOff.programs.aiSandbox.internal.preStartFiles ? pi
+        && lib.hasInfix (segment localIsoOff) (noCtx localIsoOff.home.shellAliases.pi)
         && !(localIsoOff.home.shellAliases ? pi_nono)
         && !(has localIsoOff "pi_nono-with-search")
-        && commands localIsoOff == {inherit (plainIsoOff.home.shellAliases) pi;}
-        && wrapperRuns localIsoOff "pi-with-search" plainIsoOff.home.shellAliases.pi;
-      message = "search-local: with the isolation off, only pi exists (nono only) and its wrapper runs that line";
+        && plainIsoOff.programs.aiSandbox.internal.preStartFiles == {};
+      message = "search-local: with the isolation off, only pi exists (nono only) and it sources the hook";
     }
     {
       condition = let
         c = on {programs.aiSandbox.enable = false;};
       in
         lib.all (has c) scripts
-        && lib.all (n: !(has c n)) wrappers
         && !(c.home.shellAliases ? pi)
         && c.home.sessionVariables.PI_SEARX_URL == url;
-      message = "search-local: without the sandbox, the scripts and the URL only (no alias to wrap)";
+      message = "search-local: without the sandbox, the scripts and the URL only (no alias, no hook)";
     }
     {
       condition = let
         c = on {programs.aiSandbox.harnesses.pi.enable = false;};
       in
-        lib.all (has c) scripts && lib.all (n: !(has c n)) wrappers && !(c.home.shellAliases ? pi);
-      message = "search-local: without the pi harness, the scripts only";
+        lib.all (has c) scripts && !(c.home.shellAliases ? pi) && c.programs.aiSandbox.internal.preStartFiles == {};
+      message = "search-local: without the pi harness, the scripts only (no alias, no hook file)";
     }
     {
       condition = let
         c = on {programs.aiSandbox.extraAliases.pi = "my-pi";};
       in
-        c.home.shellAliases.pi == "my-pi" && c.home.shellAliases.pi_nono == "pi_nono-with-search";
-      message = "search-local: a consumer's own pi alias (extraAliases) wins over the wrapper";
+        c.home.shellAliases.pi == "my-pi" && lib.hasInfix (segment c) (noCtx c.home.shellAliases.pi_nono);
+      message = "search-local: a consumer's own pi alias (extraAliases) stays its own text, without the hook; pi_nono keeps it";
+    }
+    {
+      # A variant of the pi harness and its twin source the hook too (the old wrappers missed them).
+      condition = let
+        c = on {
+          programs.aiSandbox.variants.pi_notes = {
+            harness = "pi";
+            suffix = "notes";
+          };
+        };
+      in
+        lib.all (n: lib.hasInfix (segment c) (noCtx c.home.shellAliases.${n})) ["pi" "pi_nono" "pi_notes" "pi_notes_nono"];
+      message = "search-local: every pi variant and its _nono twin sources the hook";
     }
     {
       condition = let
@@ -198,16 +215,17 @@ in
         local.programs.pi.search.local.reuseExisting
         && lib.hasInfix "\nPI_SEARX_REUSE=1\n" (up local)
         && lib.hasInfix "\nPI_SEARX_REUSE=0\n" (up strict)
-        && lib.hasInfix "if pi-searx-up </dev/null; then\n  export PI_SEARX_URL=${lib.escapeShellArg url}\nelse\n  unset PI_SEARX_URL\nfi\n" (pkg strict "pi-with-search").text
-        && !(lib.hasInfix "unset PI_SEARX_URL" (pkg local "pi-with-search").text)
-        && !(lib.hasInfix "unset PI_SEARX_URL" (pkg remote "pi-with-search").text);
-      message = "search-local: reuseExisting defaults to true; off, the scripts refuse a foreign server and the wrapper drops PI_SEARX_URL when pi-searx-up fails (not when searxUrl points elsewhere)";
+        && lib.hasInfix "if ${envExe} -u TMPDIR ${upExe strict}; then\n  export PI_SEARX_URL=${lib.escapeShellArg url}\nelse\n  unset PI_SEARX_URL\nfi\n" (hookText strict)
+        && !(lib.hasInfix "unset PI_SEARX_URL" (hookText local))
+        && !(lib.hasInfix "unset PI_SEARX_URL" (hookText remote));
+      message = "search-local: reuseExisting defaults to true; off, the scripts refuse a foreign server and the hook drops PI_SEARX_URL when pi-searx-up fails (not when searxUrl points elsewhere)";
     }
     {
       condition = let
         c = on {programs.pi.enable = false;};
       in
         lib.all (n: !(has c n)) (scripts ++ wrappers)
+        && c.programs.aiSandbox.internal.preStartFiles == {}
         && !(c.home.sessionVariables ? PI_SEARX_URL)
         && c.home.shellAliases == (piFixtureWith {programs.pi.enable = false;}).home.shellAliases;
       message = "search-local: with programs.pi.enable = false nothing of it exists";

@@ -10,11 +10,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794094099,
-        "narHash": "sha256-GjgSFsWaz2PR9MBkh+G13pFOrEMsKsF94yNVUWMsuNo=",
+        "lastModified": 1794230593,
+        "narHash": "sha256-0N5ZVLNKT4+5D1O41rEb2zEy6OvaYr6jYcfMsdBi+aM=",
         "owner": "GRBurst",
         "repo": "ai-sandbox",
-        "rev": "5ca539cfb346c0aa1c3760737cf0c3f36b9e9dd0",
+        "rev": "5d017f566ae3c9906cda4a6bd6d32dc994e803b6",
         "type": "github"
       },
       "original": {

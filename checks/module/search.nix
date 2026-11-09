@@ -15,6 +15,13 @@
     programs.pi.search.searxUrl = "http://127.0.0.1:9999";
   };
 
+  # The web-search built-in reads PI_SEARX_URL and never sets it.
+  webSearch = extra:
+    piFixtureWith {
+      imports = [extra];
+      programs.pi.builtinExtensions.webSearch.enable = true;
+    };
+
   health = "http://example.invalid:11545";
   bridged = extra: piFixtureWith {imports = [bridge piEconomicsStub extra];};
   routed = bridged {programs.pi.router.localHealthUrl = health;};
@@ -41,6 +48,14 @@ in
       # Like every leaf of the module: nothing while pi is off.
       condition = !(piOff.home.sessionVariables ? PI_SEARX_URL);
       message = "search: with programs.pi.enable = false searxUrl exports no PI_SEARX_URL";
+    }
+    {
+      condition =
+        (webSearch {}).home.sessionVariables
+        == alone.home.sessionVariables
+        && (webSearch {programs.pi.search.searxUrl = "http://127.0.0.1:9999";}).home.sessionVariables
+        == withUrl.home.sessionVariables;
+      message = "search: the web-search built-in leaves searxUrl and PI_SEARX_URL as they are";
     }
     {
       condition = alone.programs.pi.router.localHealthUrl == null && (bridged {}).programs.piEconomics.taskRouter.settings == {};

@@ -37,11 +37,11 @@ settings/seed.json                the settings seed (rendered)
 render/                           the render fixture and `nix run .#render`
 modules/home-manager/             the Home Manager module (pi options, extension registry)
 modules/home-manager/economics-bridge.nix  the economics bridge (a path output)
-extensions/                       the extension this repository carries (`static-working-indicator`)
+extensions/                       the extensions this repository carries (`static-working-indicator`, `web-search`)
 packages/pi-web/                  the pi-web package (Nix-only service)
 examples/existing-flake/          the example flake for an existing Home Manager flake (README, `existing-flake-example`)
 scripts/                          the two helper scripts (kept byte-stable; covered by `agent-web-prune` and as `writeShellApplication`)
-checks/                           module/ (behaviour), render, package, leaks, meta checks
+checks/                           module/ (behaviour), render, package, leaks, meta checks, web-search/ (the extension's tests)
 ```
 
 ## Resources and render
@@ -110,3 +110,11 @@ any other repository.
 - **AD17 One lock fact, one check.** The manifest and the seed are rendered from
   `flake.lock`, so a changed revision turns the render check red; no second check
   over the same facts is kept.
+- **AD18 Own extensions stand alone.** An extension of this repository imports nothing
+  beyond pi, `typebox` and Node's built-ins, and only its `index.ts` imports pi or
+  `typebox`; the rest runs under plain `node --test`. `web-search` therefore converts HTML
+  with its own tolerant parser and opens its connections itself, pinned to the addresses
+  its guard checked, instead of adding an npm dependency or a proxy. Its check runs the
+  same tests under `bun test` as well: the pi package this flake builds against runs on
+  Node, the standalone pi binaries on Bun, and the two differ where the guard and the
+  converter depend on them (`lookup`, proxies, zlib, string limits).

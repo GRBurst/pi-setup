@@ -135,7 +135,7 @@ itself does not need Nix: without Nix, install ai-sandbox with its own installer
   `search-local-run`, `web`, `fixtures`,
   `shellcheck`, `actionlint`, `doc-refs`, `boundary`, `agent-web-prune`,
   `render-seed`, `render-package`, `pi-package-manifest`, `pi-install-smoke`,
-  `readme-sections`, `existing-flake-example`.
+  `readme-sections`, `existing-flake-example`, `web-search`.
 - `formatter.<system>`: Alejandra.
 
 Inputs: `nixpkgs`, `home-manager` (both followed by consumers),
@@ -155,6 +155,7 @@ no default. `extensions.<name>.*` describes one registry entry.
 | `builtinExtensions.question.enable` | `true` | Link the `question` extension: a question tool in a bottom dock, withheld from children. |
 | `builtinExtensions.sessionName.enable` | `true` | Link the `session-name` extension: names the session so the tab title, selector and footer show what is worked on. |
 | `builtinExtensions.staticWorkingIndicator.enable` | `false` | Link `static-working-indicator`, which replaces pi's animated working spinner with a static glyph (no timer, no repaint of the transcript). |
+| `builtinExtensions.webSearch.enable` | `false` | Link `web-search`: the tools `web_search` (SearXNG, Tavily or Brave, chosen by environment variables) and `web_fetch` (a public page as markdown), for children too (see Web search). |
 | `claudeAuth.credentialsFile` | read-only | Absolute path of the Claude credentials file the extension reads, for consumers outside the sandbox: `<dir>/.credentials.json` with `setConfigDir`, else `~/.claude/.credentials.json`. |
 | `claudeAuth.dir` | `"$HOME/.pi/claude"` | The Claude config dir inside every pi sandbox (`CLAUDE_CONFIG_DIR`), used only with `setConfigDir`: absolute or starting with `$HOME/`. Under `$HOME/.pi` the pi pack's grant covers it; elsewhere it is granted read+write to every profile that extends the pack. |
 | `claudeAuth.enable` | `true` | The `claude-auth` extension (Claude subscription auth for pi) and, with `setConfigDir`, pi's own Claude dir. |
@@ -175,7 +176,7 @@ no default. `extensions.<name>.*` describes one registry entry.
 | `search.local.port` | `8888` | Loopback port. Whatever already answers `/healthz` there is reused instead of started (logged as such) and left alone by `pi-searx-down`; see `reuseExisting`. |
 | `search.local.reuseExisting` | `true` | Reuse a server on the port that `pi-searx-up` did not start. A trust decision, see Local search without NixOS. `false`: `pi-searx-up` fails when it finds one, and the `pi` wrappers start pi without `PI_SEARX_URL`, so without search. |
 | `search.local.settings` | `{ }` | SearXNG settings merged key by key over the base: upstream defaults with their engines (`use_default_settings = true`), limiter off, `search.formats = [ "html" "json" ]`. `search.formats` must keep `json`; `server.bind_address` (`127.0.0.1`), `server.port` and `server.secret_key` (per user, at the first start) are the module's. |
-| `search.searxUrl` | `null`; `http://127.0.0.1:<port>` with `search.local.enable` | The SearXNG instance for a web-search extension that reads `PI_SEARX_URL` (none ships with this repository), exported as that variable; `null` sets no variable. Derive it from the instance that actually runs, never from a literal. |
+| `search.searxUrl` | `null`; `http://127.0.0.1:<port>` with `search.local.enable` | The SearXNG instance for the built-in `web_search` (`builtinExtensions.webSearch.enable`) or any extension that reads `PI_SEARX_URL`, exported as that variable; `null` sets no variable. Derive it from the instance that actually runs, never from a literal. |
 | `settings.manage` | `true` | Manage `<agentDir>/settings.json`: the out-of-store link to `settings.stateFile`, the one-time seed, the reclaim of a file pi overwrote and the state-file grant. `false` leaves the file to pi alone and the economics bridge refuses it. |
 | `settings.reclaim.enable` | `programs.aiSandbox.enable` | Adopt a regular file pi wrote over the settings link into the state file, before Home Manager's clobber check. |
 | `settings.seed` | `{ packages = [ ]; }` | Initial content of `settings.json`, merged key by key; written once, only if the state file does not exist. Delete the state file and switch again to apply a changed seed. |
@@ -200,10 +201,93 @@ machine only.
 | 15433 | `127.0.0.1` | pi-web server | `web.backendPort`; the backend behind the proxy |
 | 8888 | `127.0.0.1` | SearXNG | `search.local.port`; started by `pi-searx-up`, no bind option |
 
+## Web search
+
+`programs.pi.builtinExtensions.webSearch.enable = true` links the built-in `web-search`
+extension (off by default). It adds two tools:
+
+- `web_search`: a query and an optional `count` (1 to 10, default 5); returns a ranked
+  list of results, each with title, URL and snippet.
+- `web_fetch`: one public `http`/`https` URL; returns the page's title, final URL and
+  readable text as markdown. HTML is converted locally, by the extension itself; plain
+  text, JSON and XML pass through.
+
+The search backend is chosen once, when pi loads the extension, from its environment.
+The first variable that is set and not empty wins:
+
+| Variable | Backend | Where a query goes |
+| --- | --- | --- |
+| `PI_SEARX_URL` | SearXNG at that URL (`search.searxUrl` or `search.local` sets it) | that instance only: no third party, no key |
+| `TAVILY_API_KEY` | Tavily | Tavily, a third party, with your key |
+| `BRAVE_API_KEY` | Brave Search | Brave, a third party, with your key |
+
+With none set, both tools still exist: `web_search` answers with these setup
+instructions, `web_fetch` works. A `PI_SEARX_URL` that is not a plain `http`/`https`
+URL is an error, never a silent switch to Tavily or Brave.
+
+The API keys are not Nix options (they would land in the world-readable store): export
+them yourself, from a secret manager or your shell profile, before pi starts, and
+restart pi after a change. No output or error message repeats a key.
+
+Queries to SearXNG go over a direct connection: `HTTP_PROXY`, `HTTPS_PROXY`,
+`ALL_PROXY` and the like are ignored, so a query for your own instance cannot end up at
+a proxy. That connection follows at most 3 redirects within the instance's own origin
+(a trailing slash, a path prefix); any other redirect is an error that names its
+target, so set `PI_SEARX_URL` to the address the instance answers at. Tavily and Brave
+are asked through the runtime's `fetch`, which may honour those variables. Result
+titles, snippets and URLs are reduced to one line without control characters.
+
+`web_fetch` contacts the target sites directly from this machine, without a proxy, so
+they see its address. It refuses:
+
+- every scheme but `http` and `https`, and URLs with `user:password@`;
+- `localhost`, `*.localhost` and the cloud metadata names, and every loopback, private
+  (RFC 1918, unique local `fc00::/7`), link-local (with the metadata address
+  `169.254.169.254`), carrier-grade NAT, multicast, reserved or unspecified address,
+  however it is written (decimal, hex, IPv4-mapped or -compatible IPv6) and however it
+  is reached (DNS, a redirect). IPv6 prefixes that carry an IPv4 address are checked by
+  that address (well-known NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) or refused as a whole
+  (local-use NAT64 `64:ff9b:1::/48`, Teredo `2001::/32`, SIIT `::ffff:0:0:0/96`). A
+  NAT64 prefix that a network chooses for itself cannot be recognised: on such a network
+  a public-looking IPv6 address can still reach a private IPv4 one. Every redirect hop
+  is checked again, at most 5 are followed, and the connection goes only to the
+  addresses that were checked: a second DNS answer cannot move it to a private one, and
+  a connection that ends up at any other address is dropped as soon as it connects,
+  before the request is written;
+- bodies over 2 MiB (decompressed) or 4 MiB (as received, still compressed), and
+  images, PDFs and other binary types; it renders no JavaScript. A call takes at most
+  30 s (20 s per hop); HTML conversion stops at 256 KiB of markdown (ending with a
+  `[truncated]` line), links resolve against a `<base href>` only up to 2 KiB and
+  longer link URLs are left out, and the output is cut at 50 KiB or 2000 lines, with a
+  note.
+
+Children: the registry entry has `forChildren = true`, so the economics bridge gives
+both tools to background child agents, which inherit pi's environment and with it the
+backend. In the nono sandbox the pi profile does not block the network and sets no
+proxy, so the tools work there as well; the guard above is what keeps `web_fetch` off
+local and private addresses.
+
+Without Nix, the package (`pi install git:…`, see Without Nix) includes
+`extensions/web-search`, so both tools load: unlike the Nix option, which is off by
+default, the package turns the extension on. Until a backend variable is set in pi's
+environment, `web_search` answers with the setup instructions above. To leave it out,
+for example because another extension already provides `web_search` (pi refuses a
+second tool of the same name), filter it:
+
+    "packages": [
+      {
+        "source": "git:github.com/GRBurst/pi-setup@<tag>",
+        "extensions": ["!extensions/web-search/**"]
+      }
+    ]
+
+Which extensions a child agent loads without Nix is up to whatever starts it; this
+repository does not configure that.
+
 ## Local search without NixOS
 
-`programs.pi.search.local` runs SearXNG on demand, on `127.0.0.1` only, for a web-search
-extension that reads `PI_SEARX_URL` (none ships with this repository). It needs Home
+`programs.pi.search.local` runs SearXNG on demand, on `127.0.0.1` only, for the built-in
+`web_search` (see Web search) or any extension that reads `PI_SEARX_URL`. It needs Home
 Manager but neither NixOS nor a systemd user session, so it works in a container; where
 systemd exists it works the same:
 

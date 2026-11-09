@@ -28,6 +28,8 @@ a disjoint union; a duplicate check name is an evaluation error):
   `render-package`);
 - package: the pi package installs and loads (`pi-package-manifest`,
   `pi-install-smoke`, `existing-flake-example`);
+- extension: the repository's own extension code under `node --test`, offline
+  (`web-search`);
 - shell: `shellcheck` and the workflow lint (`actionlint`);
 - meta: README and docs against the code, the leak scan, formatting,
   `readme-options`, `readme-sections`, `doc-refs`, `boundary` (no host coupling,

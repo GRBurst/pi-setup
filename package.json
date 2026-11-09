@@ -4,7 +4,7 @@
     "pi-question": "github:fdietze/pi-question#1f5e8cdf9f2f7cb197181ef53b4bc64ee42e1a76",
     "pi-session-name": "github:fdietze/pi-session-name#96078fde560d4edc146a7051e950466806e7101e"
   },
-  "description": "The pi extensions of pi-setup as a pi package: a question tool, session names, Claude subscription auth and a static working indicator.",
+  "description": "The pi extensions of pi-setup as a pi package: a question tool, session names, Claude subscription auth, a static working indicator and web search and fetch tools.",
   "keywords": [
     "pi-package"
   ],
@@ -22,7 +22,8 @@
       "./node_modules/@fdietze/pi-claude-auth/src/index.ts",
       "./node_modules/pi-question/extensions/question/index.ts",
       "./node_modules/pi-session-name/extensions/session-name/index.ts",
-      "./extensions/static-working-indicator/index.ts"
+      "./extensions/static-working-indicator/index.ts",
+      "./extensions/web-search/index.ts"
     ]
   },
   "private": true

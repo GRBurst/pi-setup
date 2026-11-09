@@ -2,7 +2,7 @@
 # are in them, and the commands the README tells a user to run do what it says.
 #
 # - headings: `## Install with Nix`, `## Without Nix`, `## Options`, `## Ports`,
-#   `## Local search without NixOS`, `## Checks`, `## Licence`;
+#   `## Web search`, `## Local search without NixOS`, `## Checks`, `## Licence`;
 # - the intro says "works without Nix through pi's package system" and "first-class Nix support";
 # - per section, the words in `mentions` occur in it;
 # - Ports: the pi-web row names both ports as whole numbers and the listen address default of
@@ -28,7 +28,7 @@
 
   phrase = "first-class Nix support";
   intro = "works without Nix through pi's package system";
-  headings = ["Install with Nix" "Without Nix" "Options" "Ports" "Local search without NixOS" "Checks" "Licence"];
+  headings = ["Install with Nix" "Without Nix" "Options" "Ports" "Web search" "Local search without NixOS" "Checks" "Licence"];
   caveat = "Do not grant the sandbox write access to `~/.claude`";
   seedMerge = "jq -s '.[1] + .[0]' settings.json <checkout>/settings/seed.json";
   # the README's line run from the fixture, where the seed sits at ./settings/seed.json
@@ -77,6 +77,20 @@
     ];
     "Options" = ["no default" "programs.pi"];
     "Ports" = [(toString web.listenPort) (toString web.backendPort) listenAddress];
+    "Web search" = [
+      "programs.pi.builtinExtensions.webSearch.enable = true"
+      "`web_search`"
+      "`web_fetch`"
+      "PI_SEARX_URL"
+      "TAVILY_API_KEY"
+      "BRAVE_API_KEY"
+      "not Nix options"
+      "third part"
+      "directly"
+      "private"
+      "child"
+      "\"!extensions/web-search/**\""
+    ];
     "Local search without NixOS" = [
       "programs.pi.search.local.enable = true"
       "PI_SEARX_URL"

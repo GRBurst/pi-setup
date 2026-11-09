@@ -12,7 +12,7 @@
 # economics bridge (./economics-bridge.nix) turns that off and forwards the registry,
 # which the economics module then renders as links, assertions and the children's list.
 #
-# Built-ins: question, session-name (on), static-working-indicator (off); claude-auth follows
+# Built-ins: question, session-name (on), static-working-indicator, web-search (off); claude-auth follows
 # `claudeAuth.enable` (./claude-auth.nix). Their sources are internal `src` options, set by
 # ./flake-module.nix from the flake's inputs.
 {
@@ -89,6 +89,16 @@ in {
             description = "The source the built-in extension static-working-indicator is taken from.";
           };
         };
+      webSearch =
+        builtinOption "web-search" false
+        // {
+          src = lib.mkOption {
+            type = lib.types.path;
+            internal = true;
+            default = ../../extensions/web-search;
+            description = "The source the built-in extension web-search is taken from.";
+          };
+        };
     };
 
     linkExtensions = lib.mkOption {
@@ -130,6 +140,17 @@ in {
             input = "the pi module's own extensions directory";
             forChildren = false;
             description = "Replaces pi's animated working spinner with a static glyph, which removes the loader's timer and with it the fullscreen repaint of the whole transcript ~12 times a second (upstream issue 3881).";
+          };
+        }
+        // lib.optionalAttrs b.webSearch.enable {
+          # Local to this module, like the indicator; for children too: no UI, and all network
+          # I/O happens inside the tool calls. The backend comes from the environment
+          # (PI_SEARX_URL, TAVILY_API_KEY, BRAVE_API_KEY), which children inherit.
+          web-search = {
+            path = "${b.webSearch.src}";
+            input = "the pi module's own extensions directory";
+            forChildren = true;
+            description = "The tools web_search (SearXNG, Tavily or Brave, chosen by environment variables) and web_fetch (a public http(s) page as markdown, converted locally, with private and internal addresses refused).";
           };
         };
     }

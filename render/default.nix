@@ -49,6 +49,7 @@
         question.enable = true;
         sessionName.enable = true;
         staticWorkingIndicator.enable = true;
+        webSearch.enable = true;
       };
       claudeAuth.enable = true;
     };
@@ -77,6 +78,11 @@
         # The registry links the store copy of this one directory (not of ../extensions).
         from = "${../extensions/static-working-indicator}";
         to = "./extensions/static-working-indicator";
+        dep = null;
+      }
+      {
+        from = "${../extensions/web-search}";
+        to = "./extensions/web-search";
         dep = null;
       }
     ];
@@ -112,7 +118,7 @@
     private = true;
     keywords = ["pi-package"];
     license = "MIT";
-    description = "The pi extensions of pi-setup as a pi package: a question tool, session names, Claude subscription auth and a static working indicator.";
+    description = "The pi extensions of pi-setup as a pi package: a question tool, session names, Claude subscription auth, a static working indicator and web search and fetch tools.";
     inherit dependencies;
     # What pi itself provides: never installed as a dependency.
     peerDependencies = lib.genAttrs [

@@ -77,6 +77,9 @@
 
       # The repository installs as a pi package offline, and pi loads its extensions.
       pi-install-smoke = import ./pi-install-smoke.nix {inherit pkgs self;};
+
+      # The web-search extension's tests, offline with an injected transport and resolver.
+      web-search = import ./web-search {inherit pkgs lib;};
     }
     # The committed rendered paths against the render fixture's output.
     (import ./render.nix {inherit pkgs lib self render;})

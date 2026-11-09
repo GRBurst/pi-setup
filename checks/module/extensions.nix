@@ -24,6 +24,8 @@
 
   alone = piFixtureWith {};
   indicator = piFixtureWith {programs.pi.builtinExtensions.staticWorkingIndicator.enable = true;};
+  search = {programs.pi.builtinExtensions.webSearch.enable = true;};
+  webSearch = piFixtureWith search;
 
   # A consumer's own entry: the registry is generic.
   ownDir = pkgs.writeTextDir "index.ts" "export default function () {}\n";
@@ -86,6 +88,38 @@ in
         && lib.hasSuffix "-static-working-indicator" l.static-working-indicator
         && !indicator.programs.pi.extensions.static-working-indicator.forChildren;
       message = "extensions: static-working-indicator is off by default and linked (not for children) when enabled";
+    }
+    {
+      # The web tools: off by default; enabled, the repository's own directory (its
+      # index.ts is what pi discovers), and children get them too.
+      condition = let
+        l = links webSearch;
+        e = webSearch.programs.pi.extensions.web-search;
+      in
+        !(alone.programs.pi.extensions ? web-search)
+        && !(links alone ? web-search)
+        && !alone.programs.pi.builtinExtensions.webSearch.enable
+        && lib.hasSuffix "-web-search" l.web-search
+        && builtins.pathExists "${l.web-search}/index.ts"
+        && e.forChildren
+        && e.input == "the pi module's own extensions directory"
+        && piFailedWith search == [];
+      message = "extensions: web-search is off by default and linked as .pi/agent/extensions/web-search (for children) when enabled";
+    }
+    {
+      # Through the bridge the children's list gets the web tools.
+      condition = let
+        h = piFixtureWith {
+          imports = [bridge stub search];
+        };
+        pe = h.programs.piEconomics.extensions;
+      in
+        links h
+        == {}
+        && pe ? web-search
+        && pe.web-search.forChildren
+        && lib.all (f: pe.web-search.${f} == h.programs.pi.extensions.web-search.${f}) fields;
+      message = "extensions: the bridge forwards web-search to the economics registry, for children";
     }
     {
       condition =

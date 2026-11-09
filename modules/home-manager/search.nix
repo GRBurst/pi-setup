@@ -16,7 +16,8 @@
         The SearXNG instance for a web-search extension that reads `PI_SEARX_URL` (none ships
         with this repository), exported as that variable. Set it from the instance that
         actually runs (e.g. derived from the NixOS service), never from a literal. null: no
-        variable.
+        variable. With `search.local.enable` it defaults to that instance's URL
+        (./search-local.nix).
       '';
     };
 

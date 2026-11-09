@@ -21,7 +21,7 @@
 #       evaluation reaches;
 #   (3) the modules and the render evaluated from a copy of the repository without the
 #       rendered paths, with every code path that reads a file of the repository switched on
-#       (the web service, the static indicator; the render fixture F_P and the render tree): a
+#       (the web service, the static indicator, the local search; the render fixture F_P and the render tree): a
 #       module or the render reading a rendered file, however it builds the path (`dirOf`,
 #       string concatenation), fails the evaluation of this check with "No such file or
 #       directory".
@@ -65,6 +65,7 @@
   bareHome = bareFixtures.piFixtureWith {
     programs.pi.web.enable = true;
     programs.pi.builtinExtensions.staticWorkingIndicator.enable = true;
+    programs.pi.search.local.enable = true;
   };
   bareRender = import "${bare}/render" {
     inherit pkgs lib home-manager;

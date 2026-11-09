@@ -11,6 +11,7 @@
   checked = [
     "packages/pi-web/update.sh"
     "checks/leaks/scan.sh"
+    "scripts/pi-searx.sh"
   ];
   # Frozen, covered another way:
   #  - scripts/pi-sessions.sh, scripts/pi-web-prune-settings.sh: kept byte-stable

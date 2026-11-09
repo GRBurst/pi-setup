@@ -1,12 +1,13 @@
 # The README as a user's first page (the sandbox repository's form): the sections exist, the words a user needs
 # are in them, and the commands the README tells a user to run do what it says.
 #
-# - headings: `## Install with Nix`, `## Without Nix`, `## Options`, `## Ports`, `## Checks`,
-#   `## Licence`;
+# - headings: `## Install with Nix`, `## Without Nix`, `## Options`, `## Ports`,
+#   `## Local search without NixOS`, `## Checks`, `## Licence`;
 # - the intro says "works without Nix through pi's package system" and "first-class Nix support";
 # - per section, the words in `mentions` occur in it;
 # - Ports: the pi-web row names both ports as whole numbers and the listen address default of
-#   the evaluated module (`programs.aiSandbox.services.pi-web.proxy.listenAddress`);
+#   the evaluated module (`programs.aiSandbox.services.pi-web.proxy.listenAddress`); the
+#   SearXNG row names the default `search.local.port` and its bind address, `127.0.0.1`;
 # - the caveat pin: the sentence that forbids a write grant to `~/.claude` is in "Without Nix";
 # - the seed merge: the README's merge line, run on two fixtures, keeps the existing keys
 #   and adds the seed's; a `settings.json` that does not exist is covered by copying the seed.
@@ -23,10 +24,11 @@
   }).piFixtureWith {programs.pi.web.enable = true;};
   web = fixture.programs.pi.web;
   listenAddress = fixture.programs.aiSandbox.services.pi-web.proxy.listenAddress;
+  searxPort = fixture.programs.pi.search.local.port;
 
   phrase = "first-class Nix support";
   intro = "works without Nix through pi's package system";
-  headings = ["Install with Nix" "Without Nix" "Options" "Ports" "Checks" "Licence"];
+  headings = ["Install with Nix" "Without Nix" "Options" "Ports" "Local search without NixOS" "Checks" "Licence"];
   caveat = "Do not grant the sandbox write access to `~/.claude`";
   seedMerge = "jq -s '.[1] + .[0]' settings.json <checkout>/settings/seed.json";
   # the README's line run from the fixture, where the seed sits at ./settings/seed.json
@@ -75,6 +77,25 @@
     ];
     "Options" = ["no default" "programs.pi"];
     "Ports" = [(toString web.listenPort) (toString web.backendPort) listenAddress];
+    "Local search without NixOS" = [
+      "programs.pi.search.local.enable = true"
+      "PI_SEARX_URL"
+      "pi-searx-up"
+      "pi-searx-down"
+      "/healthz"
+      "reused"
+      "pi-with-search"
+      "pi_nono-with-search"
+      "$XDG_STATE_HOME/pi-searx"
+      "0600"
+      "keep_only"
+      "reuseExisting"
+      "trust decision"
+      "PI_SEARX_WAIT"
+      "`foreign`"
+      "`lock`"
+      "loopback"
+    ];
     "Checks" = ["nix build .#checks.x86_64-linux."];
   };
 
@@ -99,7 +120,9 @@
     lib.optional (!(lib.any (row: lib.hasInfix "pi-web" row && hasNumber row web.listenPort && lib.hasInfix listenAddress row) portRows))
     "## Ports has no pi-web row naming ${toString web.listenPort} and ${listenAddress}"
     ++ lib.optional (!(lib.any (row: lib.hasInfix "pi-web" row && hasNumber row web.backendPort) portRows))
-    "## Ports has no pi-web row naming ${toString web.backendPort}";
+    "## Ports has no pi-web row naming ${toString web.backendPort}"
+    ++ lib.optional (!(lib.any (row: lib.hasInfix "SearXNG" row && hasNumber row searxPort && lib.hasInfix "127.0.0.1" row) portRows))
+    "## Ports has no SearXNG row naming ${toString searxPort} and 127.0.0.1";
 
   # The seed merge: the README's merge line, run on fixtures in the shape it expects.
   seedProblems = lib.optional (!(lib.hasInfix seedMerge (textOf "Without Nix"))) "## Without Nix does not give the seed merge line";

@@ -18,6 +18,8 @@ in {
   claude-auth = import ./claude-auth.nix {inherit lib pkgs piLib;};
   extensions = import ./extensions.nix {inherit lib pkgs inputs piLib;};
   search = import ./search.nix {inherit lib piLib;};
+  search-local = import ./search-local.nix {inherit lib piLib;};
+  search-local-run = import ./search-local-run.nix {inherit lib pkgs piLib;};
   web = import ./web.nix {inherit lib piLib;};
 
   fixtures = mkAssertionCheck "pi-setup-fixtures" [

@@ -21,7 +21,8 @@ Checks are grouped by what they guard (`checks/default.nix` merges the sets as
 a disjoint union; a duplicate check name is an evaluation error):
 
 - module: behaviour of the Home Manager module against fixture users
-  (`settings`, `claude-auth`, `extensions`, `search`, `web`, `fixtures`,
+  (`settings`, `claude-auth`, `extensions`, `search`, `search-local`,
+  `search-local-run`, `web`, `fixtures`,
   `agent-web-prune`);
 - render: committed non-Nix artifacts equal the Nix output (`render-seed`,
   `render-package`);

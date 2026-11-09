@@ -10,6 +10,7 @@
     ./claude-auth.nix
     ./extensions.nix
     ./search.nix
+    ./search-local.nix
     ./web.nix
   ];
 }

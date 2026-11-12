@@ -63,17 +63,17 @@
     "pi-claude-auth": {
       "flake": false,
       "locked": {
-        "lastModified": 1792593323,
-        "narHash": "sha256-DX1N/DkSfND1sycKdwOTI6WkUY/vipoqwlcryry7umQ=",
+        "lastModified": 1794427042,
+        "narHash": "sha256-N1O+dTBsQNmL6x1ZNwguoXWyQX9G25LcyhGQ+pWXr4E=",
         "owner": "fdietze",
         "repo": "pi-claude-auth",
-        "rev": "79972e362fa3d61b0bce4850fbb27e8927c35c6c",
+        "rev": "941e6d54ab06fe204dd2a702e902965f9e649358",
         "type": "github"
       },
       "original": {
         "owner": "fdietze",
         "repo": "pi-claude-auth",
-        "rev": "79972e362fa3d61b0bce4850fbb27e8927c35c6c",
+        "rev": "941e6d54ab06fe204dd2a702e902965f9e649358",
         "type": "github"
       }
     },

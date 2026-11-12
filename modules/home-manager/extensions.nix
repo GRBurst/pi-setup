@@ -35,9 +35,9 @@
         default = config.path;
         defaultText = lib.literalExpression "path";
         description = ''
-          What the existence assertion probes. For a patched source, the unpatched input's
+          What the existence assertion probes. For a built source, the upstream input's
           entry file: probing a derivation's output would be import-from-derivation, and a
-          patch that no longer applies fails the package's build instead.
+          build that fails does so in the package's build instead.
         '';
       };
       input = lib.mkOption {

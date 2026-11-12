@@ -51,16 +51,17 @@ Without `programs.pi.package` (default `null`) no `pi` binary is installed, and 
 The options below are under `programs.pi`. Three of them matter first:
 `settings.manage` (default `true`) links `<agentDir>/settings.json` to a state file
 and seeds it once; `claudeAuth.package` is the `claude-auth` source (default: the
-unpatched upstream); `claudeAuth.setConfigDir` (default `false`) moves pi's Claude
-config dir and needs a `package` that honours `CLAUDE_CONFIG_DIR`. The economics
+upstream); `claudeAuth.setConfigDir` (default `false`) moves pi's Claude
+config dir (upstream honours `CLAUDE_CONFIG_DIR`; turning it on needs
+`pi-claude-login` once). The economics
 bridge `homeModules.piEconomics` is a module path: a layer that declares
 `programs.piEconomics` imports it, and it forwards `programs.pi`'s extension
 registry, settings file and local health URL to `programs.piEconomics`.
 
-The Nix side has the same `claude-auth` caveat as the package: with the default
-unpatched `claudeAuth.package`, set `programs.pi.claudeAuth.enable = false` or wait for
-upstream's config-dir support, and never grant the sandbox write access to `~/.claude`
-(see the caveat under Without Nix).
+The Nix side has the same `claude-auth` caveat as the package: unless
+`claudeAuth.setConfigDir` is on, token refresh inside the sandbox needs write access to
+`~/.claude`, which you should never grant (see the caveat under Without Nix). With
+`setConfigDir`, pi uses its own Claude dir instead.
 
 ## Without Nix
 
@@ -103,17 +104,19 @@ If there is no `settings.json` yet, start from `{}`:
 Do not also link the extensions by hand or through Nix: they would conflict (pi refuses
 the second copy of a tool) or load twice.
 
-**claude-auth caveat.** The package's `claude-auth` is the unpatched upstream
-extension. Under nono it reads and locks `~/.claude`, which the pi profile does not
-make writable, so token refresh fails in the sandbox. Turn it off with the object
-form above, or wait for upstream's config-dir support.
+**claude-auth caveat.** The package's `claude-auth` is the upstream extension.
+It reads Claude Code's credentials from `CLAUDE_CONFIG_DIR`, else `~/.claude`, and
+refreshes them by running `claude -p`, which writes there. Under nono the pi profile
+does not make `~/.claude` writable, so token refresh fails in the sandbox. Point
+`CLAUDE_CONFIG_DIR` at a directory the profile can write (and log in there once), or
+turn the extension off with the object form above.
 Do not grant the sandbox write access to `~/.claude`: an agent could then write Claude
 Code settings or hooks that an unsandboxed `claude` runs.
 
 Nix-only (no `pi install` equivalent): the sandbox (`programs.aiSandbox`), the pi-web
 service (`programs.pi.web`), the local SearXNG (`programs.pi.search.local`), the
 economics bridge (`homeModules.piEconomics`), the
-patched `claude-auth` with `claudeAuth.setConfigDir` and the `pi-claude-login` helper,
+`claude-auth` config dir (`claudeAuth.setConfigDir`) and the `pi-claude-login` helper,
 and the settings link, seed and reclaim that `settings.manage` controls. The sandbox
 itself does not need Nix: without Nix, install ai-sandbox with its own installer
 (`scripts/install.sh install`); its `pi` profile runs this package.
@@ -160,8 +163,8 @@ no default. `extensions.<name>.*` describes one registry entry.
 | `claudeAuth.dir` | `"$HOME/.pi/claude"` | The Claude config dir inside every pi sandbox (`CLAUDE_CONFIG_DIR`), used only with `setConfigDir`: absolute or starting with `$HOME/`. Under `$HOME/.pi` the pi pack's grant covers it; elsewhere it is granted read+write to every profile that extends the pack. |
 | `claudeAuth.enable` | `true` | The `claude-auth` extension (Claude subscription auth for pi) and, with `setConfigDir`, pi's own Claude dir. |
 | `claudeAuth.login.enable` | `true` | `pi-claude-login`, the one-time `claude auth login` into `dir`, run inside the pi sandbox; needs `setConfigDir`, the sandbox and its pi harness. |
-| `claudeAuth.package` | the unpatched upstream | The tree whose `src/` pi loads as `claude-auth`. The default is the extension's own upstream source, unpatched; a layer may set a build that honours `CLAUDE_CONFIG_DIR`. Only the link moves: the key, the children policy and the existence check stay. |
-| `claudeAuth.setConfigDir` | `false` | Wire pi's Claude dir: `CLAUDE_CONFIG_DIR = dir` on every profile that extends the pi pack, the grant for a dir outside `$HOME/.pi`, its creation at activation and `pi-claude-login`. Off by default because the unpatched upstream ignores `CLAUDE_CONFIG_DIR`: it reads and locks `~/.claude`, which nono leaves read-only. Turn it on only with a `package` that honours the variable. |
+| `claudeAuth.package` | the upstream source | The tree whose `src/` pi loads as `claude-auth`. The default is the extension's own upstream source; a layer may set another build. Only the link moves: the key, the children policy and the existence check stay. |
+| `claudeAuth.setConfigDir` | `false` | Wire pi's Claude dir: `CLAUDE_CONFIG_DIR = dir` on every profile that extends the pi pack, the grant for a dir outside `$HOME/.pi`, its creation at activation and `pi-claude-login`. Upstream honours `CLAUDE_CONFIG_DIR`. Off by default so that existing setups see no change: turning it on moves pi's Claude login to `dir`, so `pi-claude-login` must run once. |
 | `enable` | `false` | The pi coding agent: its settings file, extensions and services, inside the sandbox. |
 | `extensions.<name>.checkPath` | the entry's `path` | What the existence assertion probes; set it when `path` is a derivation, so the check needs no build. |
 | `extensions.<name>.description` | — | What the extension does. |

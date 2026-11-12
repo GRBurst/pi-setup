@@ -48,12 +48,12 @@ in
   mkAssertionCheck "pi-setup-extensions" [
     {
       # P alone (linkExtensions = true): the built-ins question, session-name and claude-auth
-      # (unpatched upstream source) linked under <agentDir>/extensions, nothing else.
+      # (upstream source) linked under <agentDir>/extensions, nothing else.
       condition = links alone == builtins3 && alone.programs.pi.linkExtensions;
-      message = "extensions: alone, pi links question, session-name and the unpatched claude-auth under .pi/agent/extensions";
+      message = "extensions: alone, pi links question, session-name and the upstream claude-auth under .pi/agent/extensions";
     }
     {
-      # `claudeAuth.package` is the tree whose src/ pi loads: the unpatched upstream (`claudeAuth.src`) by default,
+      # `claudeAuth.package` is the tree whose src/ pi loads: the upstream source (`claudeAuth.src`) by default,
       # whatever a consumer sets otherwise; only the link moves (the existence probe, key, input and children stay).
       condition = let
         e = (piFixtureWith {programs.pi.claudeAuth.package = "/nonexistent/patched";}).programs.pi.extensions.claude-auth;
@@ -64,7 +64,7 @@ in
         && e.checkPath == "${inputs.pi-claude-auth}/src/index.ts"
         && e.input == "pi-claude-auth"
         && e.forChildren;
-      message = "extensions: claudeAuth.package defaults to the unpatched source and redirects only the claude-auth link";
+      message = "extensions: claudeAuth.package defaults to the upstream source and redirects only the claude-auth link";
     }
     {
       condition = let
@@ -78,7 +78,7 @@ in
         && e.question.input == "pi-question"
         && e.session-name.input == "pi-session-name"
         && e.claude-auth.input == "pi-claude-auth";
-      message = "extensions: the built-ins' registry entries (children: claude-auth only; claude-auth probes the unpatched input)";
+      message = "extensions: the built-ins' registry entries (children: claude-auth only; claude-auth probes the upstream input)";
     }
     {
       condition = let

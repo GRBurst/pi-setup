@@ -80,8 +80,9 @@ any other repository.
 - **AD8 Nix-only parts are documented.** The sandbox, the pi-web service, the
   economics bridge and the Claude login helper are Nix-only, and the README states it.
 - **AD9 Config-dir wiring is off by default.** The Claude login helper and its
-  config-dir variable are enabled by an option, because the unpatched extension
-  reads `~/.claude`.
+  config-dir variable are enabled by an option, because turning them on moves
+  pi's Claude login to the config dir. The upstream extension honours
+  `CLAUDE_CONFIG_DIR`.
 - **AD10 No shipped profiles.** The repository ships no profile directories; the
   shared profile of the sandbox is the sandbox repository's.
 - **AD11 Smoke tests load the package.** The install smoke check runs pi with no
@@ -96,17 +97,19 @@ any other repository.
 - **AD14 Package resources from upstream.** Extension packages are npm dependencies
   pinned to the locked revisions of their upstream repositories and referenced as
   `./node_modules/<package>/<subpath>`, pi's documented route for packages used by a
-  package. The `claude-auth` dependency is the unpatched upstream.
+  package. The `claude-auth` dependency is the upstream.
 - **AD15 Login helper caveat.** The Claude login helper is Nix-only and has no
-  one-liner without Nix. The unpatched `claude-auth` reads and locks `~/.claude`,
-  which nono leaves read-only, so token refresh inside the sandbox fails. Turn it
-  off (`programs.pi.claudeAuth.enable = false`, or filter it out with the settings
-  object form), or wait for upstream config-dir support. Do not grant the sandbox
+  one-liner without Nix. Upstream `claude-auth` refreshes through `claude -p`,
+  which writes the Claude dir (`CLAUDE_CONFIG_DIR`, else `~/.claude`); nono leaves
+  `~/.claude` read-only, so token refresh inside the sandbox fails there. Point
+  `CLAUDE_CONFIG_DIR` at a writable dir, or turn it off
+  (`programs.pi.claudeAuth.enable = false`, or filter it out with the settings
+  object form). Do not grant the sandbox
   write access to `~/.claude`: an agent could then write Claude Code settings or
   hooks that an unsandboxed `claude` runs.
-- **AD16 Patches stay out.** A patched `claude-auth` build is not in this repository;
-  the Nix option `programs.pi.claudeAuth.package` (default: the unpatched source)
-  selects which build is used.
+- **AD16 No build of `claude-auth` here.** This repository ships no patched or
+  built `claude-auth`; the Nix option `programs.pi.claudeAuth.package` (default:
+  the upstream source) selects which build is used.
 - **AD17 One lock fact, one check.** The manifest and the seed are rendered from
   `flake.lock`, so a changed revision turns the render check red; no second check
   over the same facts is kept.

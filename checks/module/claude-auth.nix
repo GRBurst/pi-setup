@@ -36,7 +36,7 @@
     };
   };
 
-  # The rows below are about the config-dir wiring, which is off by default (the unpatched claude-auth reads ~/.claude):
+  # The rows below are about the config-dir wiring, which is off by default (turning it on moves pi's Claude login to `dir`):
   # their fixtures turn it on.
   withDir = extra:
     piFixtureWith {
@@ -251,8 +251,8 @@ in
       message = "claude-auth: credentialsFile is <dir>/.credentials.json with $HOME expanded";
     }
     {
-      # The default: the config-dir wiring is off (the unpatched claude-auth reads and locks ~/.claude; a Claude dir it
-      # never reads would only mislead). No profile gets the variable or a grant, there is no login script and no Claude
+      # The default: the config-dir wiring is off (turning it on moves pi's Claude login to `dir`, so it is
+      # opt-in). No profile gets the variable or a grant, there is no login script and no Claude
       # dir activation even for a dir outside ~/.pi, the credentials file is ~/.claude's, and the extension stays.
       condition = let
         d = piFixtureWith piPackEverywhere;
@@ -291,21 +291,5 @@ in
           programs.pi.claudeAuth.dir = ".pi/claude";
         };
       message = "claude-auth: with setConfigDir on the Claude dir is wired on every pi profile, pi-claude-login exists and the dir assertion still holds";
-    }
-    {
-      # The warning of setConfigDir with the unpatched upstream (package = src): the profiles would set CLAUDE_CONFIG_DIR for
-      # an extension that reads ~/.claude. Neither the default (wiring off) nor a package of its own (a patched build) warns.
-      condition = let
-        warned = d: lib.any (lib.hasInfix "claudeAuth.package is the unpatched upstream") d.warnings;
-      in
-        warned (piFixtureWith {programs.pi.claudeAuth.setConfigDir = true;})
-        && !(warned (piFixtureWith {}))
-        && !(warned (piFixtureWith {
-          programs.pi.claudeAuth = {
-            setConfigDir = true;
-            package = "/nonexistent/patched";
-          };
-        }));
-      message = "claude-auth: setConfigDir with the unpatched package warns; the default and a package of its own do not";
     }
   ]

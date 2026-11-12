@@ -1,10 +1,10 @@
 # pi's Claude auth: the `claude-auth` extension and, with `claudeAuth.setConfigDir`, pi's own
-# Claude dir. The wiring is off by default: the upstream claude-auth reads and locks its
-# credentials in ~/.claude, which nono leaves read-only, so a config dir it never reads would
-# only mislead. A layer that supplies a claude-auth honouring CLAUDE_CONFIG_DIR
-# (`claudeAuth.package`) turns it on, and then every Claude Code process inside a pi sandbox
-# (claude-auth's `claude -p` refresh, and pi-claude-login) runs with
-# CLAUDE_CONFIG_DIR = claudeAuth.dir, set on every profile extending the pi pack.
+# Claude dir. The upstream claude-auth honours CLAUDE_CONFIG_DIR (its credentials file is
+# <dir>/.credentials.json, else ~/.claude), so the wiring works with the default `package`. It is
+# off by default: turning it on moves pi's Claude login to `dir` and needs `pi-claude-login` once.
+# With it on, every Claude Code process inside a pi sandbox (claude-auth's `claude -p` refresh,
+# and pi-claude-login) runs with CLAUDE_CONFIG_DIR = claudeAuth.dir, set on every profile
+# extending the pi pack.
 # The default dir lies under ~/.pi, which the nolabs-ai/pi pack already grants rw and no other
 # pack does, so no grant is added; outside ~/.pi/agent, so pi never treats it as its own
 # state. Never a session variable: unsandboxed `claude` keeps ~/.claude. No other profile may point
@@ -72,7 +72,7 @@ in {
         Claude Code's config dir inside every pi sandbox (CLAUDE_CONFIG_DIR; used only with `setConfigDir`): absolute, or
         starting with `$HOME/` (nono expands it). Under `$HOME/.pi` the pi pack's own grant covers
         it; anywhere else the dir is added to the grants of every profile extending the pack,
-        read+write, so Claude Code can write its config, credentials and refresh lock.
+        read+write, so Claude Code can write its config, credentials and its own refresh lock.
       '';
     };
 
@@ -85,10 +85,10 @@ in {
       default = false;
       description = ''
         Whether pi's Claude dir is wired: `CLAUDE_CONFIG_DIR = dir` on every profile extending the pi pack, the
-        grant for a dir outside `$HOME/.pi`, its creation in activation, and `pi-claude-login`. Needs a claude-auth
-        that honours `CLAUDE_CONFIG_DIR` (`package`): the unpatched upstream reads and locks `~/.claude`, which nono
-        leaves read-only, so with it the wiring would log into a directory the extension never reads. Off: Claude
-        Code and the extension keep `~/.claude`, and this module adds nothing of it to any sandbox profile.
+        grant for a dir outside `$HOME/.pi`, its creation in activation, and `pi-claude-login`. The upstream
+        claude-auth honours `CLAUDE_CONFIG_DIR`, so the extension reads `dir` too. Off by default: turning it on
+        moves pi's Claude login to `dir`, so `pi-claude-login` must run once. Off: Claude Code and the extension
+        keep `~/.claude`, and this module adds nothing of it to any sandbox profile.
       '';
     };
 
@@ -106,7 +106,7 @@ in {
     src = lib.mkOption {
       type = lib.types.path;
       internal = true;
-      description = "The unpatched pi-claude-auth source: the default of `package` and what the existence assertion probes.";
+      description = "The upstream pi-claude-auth source: the default of `package` and what the existence assertion probes.";
     };
 
     package = lib.mkOption {
@@ -114,8 +114,8 @@ in {
       default = auth.src;
       defaultText = lib.literalExpression "config.programs.pi.claudeAuth.src";
       description = ''
-        The tree whose `src/` pi loads as the `claude-auth` extension: the unpatched upstream by default;
-        the private layer sets a patched build. Only the link moves: the existence assertion still probes
+        The tree whose `src/` pi loads as the `claude-auth` extension: the upstream source by default;
+        a consumer may point it at another build. Only the link moves: the existence assertion still probes
         `src`, and the key, the children policy and the input name stay.
       '';
     };
@@ -123,9 +123,6 @@ in {
 
   config = lib.mkIf (cfg.enable && auth.enable) (lib.mkMerge [
     {
-      # setConfigDir with the unpatched upstream (package = src) puts CLAUDE_CONFIG_DIR into the
-      # profiles while the extension reads ~/.claude. A warning, not an assertion: upstream may honour the variable one day.
-      warnings = lib.optional (auth.setConfigDir && "${auth.package}" == "${auth.src}") "pi-setup: programs.pi.claudeAuth.setConfigDir is on but claudeAuth.package is the unpatched upstream, which ignores CLAUDE_CONFIG_DIR";
       # Under setConfigDir, credentialsFile is the absolute spelling of dir: only an absolute path or $HOME/ has one.
       assertions = [
         {
@@ -135,7 +132,7 @@ in {
       ];
 
       # Seeds <agentDir>/auth.json from Claude Code's credentials and, on expiry, runs
-      # `claude -p` so Claude Code refreshes them (with CLAUDE_CONFIG_DIR = `dir` inside the pi
+      # `claude -p` so Claude Code refreshes them, under its own lock (with CLAUDE_CONFIG_DIR = `dir` inside the pi
       # sandboxes under `setConfigDir`). Loaded into children too: auth.json only shares the token; the billing header
       # (before_provider_request), the full Claude Code user-agent and the `claude -p` refresh
       # path are what bill a request to the plan, and a child with its own model runtime never
@@ -144,8 +141,8 @@ in {
       #
       # The whole src/ directory, not the repo root: its entry point is src/index.ts
       # (package.json `pi.extensions`), and pi discovers only <dir>/index.ts. src/ imports
-      # nothing outside itself. The existence assertion probes the unpatched input: probing a
-      # built `package` would be import-from-derivation; a patch that no longer applies fails
+      # nothing outside itself. The existence assertion probes the upstream input: probing a
+      # built `package` would be import-from-derivation; a build that fails does so in
       # the package's build instead.
       programs.pi.extensions.claude-auth = {
         path = "${auth.package}/src";
@@ -156,7 +153,7 @@ in {
       };
     }
 
-    # The config-dir wiring: only with a claude-auth that honours CLAUDE_CONFIG_DIR (`setConfigDir`).
+    # The config-dir wiring: only with `setConfigDir`.
     (lib.mkIf auth.setConfigDir {
       programs.aiSandbox.packDefaults."nolabs-ai/pi" = {
         setVars.CLAUDE_CONFIG_DIR = auth.dir;

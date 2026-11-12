@@ -23,9 +23,9 @@
       url = "github:fdietze/pi-session-name/96078fde560d4edc146a7051e950466806e7101e";
       flake = false;
     };
-    # The unpatched upstream; a consumer may replace it through `programs.pi.claudeAuth.package`.
+    # Upstream, which honours CLAUDE_CONFIG_DIR; a consumer may replace it through `programs.pi.claudeAuth.package`.
     pi-claude-auth = {
-      url = "github:fdietze/pi-claude-auth/79972e362fa3d61b0bce4850fbb27e8927c35c6c";
+      url = "github:fdietze/pi-claude-auth/941e6d54ab06fe204dd2a702e902965f9e649358";
       flake = false;
     };
   };

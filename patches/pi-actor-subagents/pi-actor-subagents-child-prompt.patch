@@ -1,0 +1,71 @@
+diff -ruN a/extensions/actor-subagents/child-prompt.test.ts b/extensions/actor-subagents/child-prompt.test.ts
+--- a/extensions/actor-subagents/child-prompt.test.ts
++++ b/extensions/actor-subagents/child-prompt.test.ts
+@@ -0,0 +1,22 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { agentSystemPrompt } from "./agent-system-prompt.ts";
++import { childPromptOptions } from "./child-prompt.ts";
++
++test("childPromptOptions never replaces pi's system prompt", () => {
++	// A systemPromptOverride makes pi drop its default tools and rules sections, and the rules
++	// are where extensions' promptGuidelines land (e.g. infinite-context's fold guidance).
++	const options = childPromptOptions("worker", "Be brief.", "main");
++	assert.deepEqual(Object.keys(options), ["appendSystemPromptOverride"]);
++});
++
++test("childPromptOptions keeps discovered append prompts and adds the agent preamble last", () => {
++	const { appendSystemPromptOverride } = childPromptOptions("worker", "Be brief.", "lead");
++	assert.deepEqual(appendSystemPromptOverride(["FROM APPEND_SYSTEM.md"]), [
++		"FROM APPEND_SYSTEM.md",
++		agentSystemPrompt("worker", "Be brief.", "lead"),
++	]);
++	assert.deepEqual(appendSystemPromptOverride([]), [
++		agentSystemPrompt("worker", "Be brief.", "lead"),
++	]);
++});
+diff -ruN a/extensions/actor-subagents/child-prompt.ts b/extensions/actor-subagents/child-prompt.ts
+--- a/extensions/actor-subagents/child-prompt.ts
++++ b/extensions/actor-subagents/child-prompt.ts
+@@ -0,0 +1,19 @@
++/**
++ * How a child's system prompt reaches pi's resource loader.
++ *
++ * The agent preamble is APPENDED to pi's own prompt rather than replacing it. A
++ * systemPromptOverride makes pi drop its default preamble together with the tools and rules
++ * sections, and the rules section is where extensions' promptGuidelines land: a child would get
++ * a policy-granted extension's tools without the guidance on when to use them.
++ */
++import { agentSystemPrompt } from "./agent-system-prompt.ts";
++
++export function childPromptOptions(
++	name: string,
++	systemPrompt: string,
++	spawnedBy: string,
++): { appendSystemPromptOverride: (base: string[]) => string[] } {
++	return {
++		appendSystemPromptOverride: (base) => [...base, agentSystemPrompt(name, systemPrompt, spawnedBy)],
++	};
++}
+diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/index.ts
+--- a/extensions/actor-subagents/index.ts
++++ b/extensions/actor-subagents/index.ts
+@@ -25,7 +25,7 @@
+ } from "./agent-message.ts";
+ import { renderAgentMessage } from "./agent-message-renderer.ts";
+ import { orderAgents } from "./agent-order.ts";
+-import { agentSystemPrompt } from "./agent-system-prompt.ts";
++import { childPromptOptions } from "./child-prompt.ts";
+ import { makeAgentTools } from "./agent-tools.ts";
+ import type { AgentHandle } from "./agent-record.ts";
+ import type { EngineResumeResult } from "./control-result.ts";
+@@ -513,8 +513,7 @@
+       extensionFactories: [
+         { name: "subagent-timestamps", factory: registerToolTimestamps },
+       ],
+-      systemPromptOverride: () =>
+-        agentSystemPrompt(spec.name, spec.systemPrompt, spec.spawnedBy),
++      ...childPromptOptions(spec.name, spec.systemPrompt, spec.spawnedBy),
+     });
+     await loader.reload();
+     // Project settings ride along as overrides (the in-memory manager only seeds the global

@@ -1,0 +1,13 @@
+pi-setup is MIT-licensed (LICENSE). It builds one upstream extension from its
+source and applies the patches under patches/<input>/ to it. The patches are
+derived from that project and are distributed under its licence; the upstream's
+licence text, with its permission notice, is kept next to its patches as
+patches/<input>/LICENSE.
+
+## pi-actor-subagents
+https://github.com/fdietze/pi-actor-subagents — MIT, Copyright (c) 2026 Felix Dietze
+Licence text: patches/pi-actor-subagents/LICENSE
+
+checks/npm/package.json and its lockfile are pi-retry's own
+(https://github.com/monotykamary/pi-retry, MIT, author Tom X Nguyen), used to
+install the toolchain of the extension checks.

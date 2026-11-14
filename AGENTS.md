@@ -23,13 +23,15 @@ a disjoint union; a duplicate check name is an evaluation error):
 - module: behaviour of the Home Manager module against fixture users
   (`settings`, `claude-auth`, `extensions`, `search`, `search-local`,
   `search-local-run`, `web`, `fixtures`,
-  `agent-web-prune`);
+  `agent-web-prune`, `actor-subagents-module`);
 - render: committed non-Nix artifacts equal the Nix output (`render-seed`,
-  `render-package`);
+  `render-package`), and a Nix-only extension never reaches them (`render-nix-only`);
 - package: the pi package installs and loads (`pi-package-manifest`,
   `pi-install-smoke`, `existing-flake-example`);
-- extension: the repository's own extension code under `node --test`, offline
-  (`web-search`);
+- extension: extension code under `node --test`, offline: the repository's own
+  (`web-search`) and the patched actor-subagents' upstream suite (`actor-subagents`),
+  its type check (`typecheck-actor-subagents`) and their toolchain (`npm-deps`,
+  `typecheck-harness`);
 - shell: `shellcheck` and the workflow lint (`actionlint`);
 - meta: README and docs against the code, the leak scan, formatting,
   `readme-options`, `readme-sections`, `doc-refs`, `boundary` (no host coupling,
@@ -77,3 +79,6 @@ then `<out>/bin/alejandra <files>`.
   are a public contract.
 - A pi package: never `@earendil-works/*` or `typebox` in `dependencies`
   (they are peers).
+- A patched upstream lives in `patches/<input>/` with the upstream's `LICENSE`
+  beside it and a section in `NOTICE`; the derivation name stays stable. Its
+  patch texts follow the id rule above (no plan, task or review ids).

@@ -1,7 +1,7 @@
 # Fixtures and helpers of the module checks of this repository.
 # The pi module alone (`piModule`, pi-setup's `homeModules.default`, over bare nixpkgs with the
 # sandbox module's stub fixture base); `inputs` supplies only pi-setup's own inputs
-# (pi-question, pi-session-name, pi-claude-auth, and ai-sandbox, whose `checks/module/lib.nix` gives the fixture base); `piWeb` is the pi-web package expression the flake module takes.
+# (pi-question, pi-session-name, pi-claude-auth, pi-actor-subagents, and ai-sandbox, whose `checks/module/lib.nix` gives the fixture base); `piWeb` is the pi-web package expression the flake module takes.
 {
   pkgs,
   lib,
@@ -12,7 +12,7 @@
   sandbox = import "${inputs.ai-sandbox}/checks/module/lib.nix" {inherit pkgs lib home-manager;};
 
   piModule = import ../../modules/home-manager/flake-module.nix {
-    inherit (inputs) pi-question pi-session-name pi-claude-auth;
+    inherit (inputs) pi-question pi-session-name pi-claude-auth pi-actor-subagents;
     aiSandbox = inputs.ai-sandbox.homeModules.default;
     inherit piWeb;
   };
@@ -22,10 +22,15 @@
   # The economics bridge (pi-setup's `homeModules.piEconomics`).
   bridge = ../../modules/home-manager/economics-bridge.nix;
 
-  # The four `programs.piEconomics` options the bridge sets, loosely typed: a field the bridge does not
-  # forward is absent here, not defaulted.
+  # The four `programs.piEconomics` options the bridge sets and the one it reads (`childExtensions`,
+  # the economics module's children list), loosely typed: a field the bridge does not forward is
+  # absent here, not defaulted.
   piEconomicsStub = {
     options.programs.piEconomics = {
+      childExtensions = lib.mkOption {
+        type = with lib.types; listOf str;
+        default = [];
+      };
       extensions = lib.mkOption {
         type = with lib.types; attrsOf (attrsOf anything);
         default = {};

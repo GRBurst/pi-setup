@@ -8,6 +8,7 @@
     aiSandbox
     ./settings.nix
     ./claude-auth.nix
+    ./actor-subagents.nix
     ./extensions.nix
     ./search.nix
     ./search-local.nix

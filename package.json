@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@fdietze/pi-claude-auth": "github:fdietze/pi-claude-auth#79972e362fa3d61b0bce4850fbb27e8927c35c6c",
+    "@fdietze/pi-claude-auth": "github:fdietze/pi-claude-auth#941e6d54ab06fe204dd2a702e902965f9e649358",
     "pi-question": "github:fdietze/pi-question#1f5e8cdf9f2f7cb197181ef53b4bc64ee42e1a76",
     "pi-session-name": "github:fdietze/pi-session-name#96078fde560d4edc146a7051e950466806e7101e"
   },

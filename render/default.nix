@@ -9,13 +9,13 @@
   pkgs,
   lib,
   home-manager,
-  # The flake's inputs: pi-question, pi-session-name, pi-claude-auth and ai-sandbox.
+  # The flake's inputs: pi-question, pi-session-name, pi-claude-auth, pi-actor-subagents and ai-sandbox.
   inputs,
 }: let
   stub = name: pkgs.writeShellScriptBin name "exit 0";
 
   piModule = import ../modules/home-manager/flake-module.nix {
-    inherit (inputs) pi-question pi-session-name pi-claude-auth;
+    inherit (inputs) pi-question pi-session-name pi-claude-auth pi-actor-subagents;
     piWeb = ../packages/pi-web;
     aiSandbox = inputs.ai-sandbox.homeModules.default;
   };
@@ -40,7 +40,7 @@
   # F_P: the module with every built-in on (the package declares the full set; the Nix
   # defaults stay Nix policy). Without Nix pi owns `settings.json`, so the settings file is
   # not managed. pi-web is Nix-only and stays off.
-  fp = eval {
+  fpModule = {
     programs.aiSandbox.enable = true;
     programs.pi = {
       enable = true;
@@ -54,6 +54,9 @@
       claudeAuth.enable = true;
     };
   };
+  fp = eval fpModule;
+  # F_P with one more module, for the checks of the render itself.
+  fpWith = extra: eval {imports = [fpModule extra];};
 
   json = name: value: pkgs.writeText name (builtins.toJSON value);
 
@@ -104,16 +107,21 @@
       inherit (r) dep;
       path = builtins.unsafeDiscardStringContext "${r.to}${lib.removePrefix r.from path}${entry}";
     };
-  mapped = lib.mapAttrsToList mapEntry fp.programs.pi.extensions;
+  # Registry entries without a pi package route, never mapped even when the fixture enables them:
+  # the patched actor-subagents is a Nix build (AD20).
+  nixOnly = ["actor-subagents"];
 
-  dependencies = lib.listToAttrs (map (dep: let
-    n = lockNode dep;
-  in
-    assert lib.assertMsg (n.locked.type == "github") "render: the input ${dep} is not a GitHub input";
-      lib.nameValuePair (pkgName inputs.${dep}) "github:${n.original.owner}/${n.original.repo}#${n.locked.rev}")
-  (lib.unique (lib.filter (d: d != null) (map (m: m.dep) mapped))));
+  # The manifest of an evaluated configuration `cfg` (F_P for the rendered file).
+  manifestOf = cfg: let
+    mapped = lib.mapAttrsToList mapEntry (removeAttrs cfg.programs.pi.extensions nixOnly);
 
-  manifest = {
+    dependencies = lib.listToAttrs (map (dep: let
+      n = lockNode dep;
+    in
+      assert lib.assertMsg (n.locked.type == "github") "render: the input ${dep} is not a GitHub input";
+        lib.nameValuePair (pkgName inputs.${dep}) "github:${n.original.owner}/${n.original.repo}#${n.locked.rev}")
+    (lib.unique (lib.filter (d: d != null) (map (m: m.dep) mapped))));
+  in {
     name = "pi-setup";
     private = true;
     keywords = ["pi-package"];
@@ -130,6 +138,7 @@
     ] (_: "*");
     pi.extensions = map (m: m.path) mapped;
   };
+  manifest = manifestOf fp;
 
   tree =
     pkgs.runCommand "pi-setup-rendered" {nativeBuildInputs = [pkgs.jq pkgs.gnugrep];}
@@ -155,4 +164,4 @@
       cp -r --no-preserve=mode ${tree}/. .
     '';
   };
-in {inherit fp tree app;}
+in {inherit fp fpWith manifestOf tree app;}

@@ -1,0 +1,1697 @@
+diff -ruN a/extensions/actor-subagents/agent-event.ts b/extensions/actor-subagents/agent-event.ts
+--- a/extensions/actor-subagents/agent-event.ts
++++ b/extensions/actor-subagents/agent-event.ts
+@@ -1,6 +1,9 @@
+ /** The engine's event log entries, which the feed, panel and reaction waits observe. */
+ export type AgentEvent =
+-	| { type: "spawn"; name: string; by: string; ts: number }
++	// `childSessionId` is known for a registered (restored) agent; a reservation learns it at
++	// `attach`, once its session exists.
++	| { type: "spawn"; name: string; by: string; childSessionId?: string; ts: number }
++	| { type: "attach"; name: string; by: string; childSessionId?: string; ts: number }
+ 	// `buffered` distinguishes a message parked in a paused inbox from one handed to the
+ 	// target session: the feed must not claim delivery for something that has not moved yet.
+ 	| { type: "route"; from: string; to: string; preview: string; buffered: boolean; ts: number }
+diff -ruN a/extensions/actor-subagents/agent-record.ts b/extensions/actor-subagents/agent-record.ts
+--- a/extensions/actor-subagents/agent-record.ts
++++ b/extensions/actor-subagents/agent-record.ts
+@@ -96,6 +96,10 @@
+ 	systemPrompt?: string;
+ 	/** Absolute path of this agent's session JSONL on disk (undefined for 'main' + in-memory). */
+ 	sessionFile?: string;
++	/** pi's id of the agent's session (spawn-policy caller, api.list, spawn events). */
++	sessionId?: string;
++	/** Opaque data the spawn policy attached to this agent (api.ts). */
++	policyMeta?: unknown;
+ 	/**
+ 	 * Phase of the running turn (reasoning vs answer text vs tool run); undefined means no
+ 	 * turn is running. Single field for "is it working" AND "at what": a separate streaming
+diff -ruN a/extensions/actor-subagents/agent-system-prompt.ts b/extensions/actor-subagents/agent-system-prompt.ts
+--- a/extensions/actor-subagents/agent-system-prompt.ts
++++ b/extensions/actor-subagents/agent-system-prompt.ts
+@@ -16,7 +16,7 @@
+     `You are agent "${name}" in a multi-agent system.`,
+     `You were spawned by "${spawnedBy}".`,
+     "You can talk to other agents with these tools:",
+-    "- spawn_subagent({name, systemPrompt, model?, thinkingLevel?, message}): create a named background agent with its own model session (message = its first task); omit model/thinkingLevel to inherit yours.",
++    "- spawn_subagent({name, systemPrompt, model?, thinkingLevel?, message}): create a named background agent with its own model session (message = its first task); omit model/thinkingLevel to let the spawn policy decide (inherit if none).",
+     '- send_message({to, content}): to is an array of agent names (multicast); fire-and-forget (e.g. ["main"]). It never waits for the reply, but it does report each receiver\'s state back to you.',
+     "- list_subagents(): see who exists.",
+     "- pause_subagents({names?}) / resume_subagents({names?}) / kill_subagents({names}): control the agents in your subtree (those you spawned, and theirs); each acts on the named agents' whole subtrees. Omitted, empty or whitespace-only names in pause/resume mean your direct children.",
+diff -ruN a/extensions/actor-subagents/agent-tools.ts b/extensions/actor-subagents/agent-tools.ts
+--- a/extensions/actor-subagents/agent-tools.ts
++++ b/extensions/actor-subagents/agent-tools.ts
+@@ -33,6 +33,7 @@
+ import { CUSTOM_STATUS_MAX, formatHistory } from "./panel-logic.ts";
+ import type { AgentModelSetter } from "./set-agent-model.ts";
+ import type { Spawner } from "./spawner.ts";
++import { SPAWN_MODEL_HINT, SPAWN_TASK_HINT, SPAWN_THINKING_HINT } from "./spawn-wording.ts";
+ import { collapseBlock, toolPreviewParts } from "./tool-preview.ts";
+ import { THINKING_LEVELS } from "./thinking-level.ts";
+ 
+@@ -140,17 +141,13 @@
+           description: "System prompt defining the agent's behavior",
+         }),
+         model: Type.Optional(
+-          Type.String({
+-            description:
+-              "Omit to inherit your current model (the default — almost always correct). Set 'provider/id' " +
+-              "ONLY when the user explicitly named a specific model; an unknown value reports available models when any are listed.",
+-          }),
++          Type.String({ description: SPAWN_MODEL_HINT }),
+         ),
+         thinkingLevel: Type.Optional(
+-          StringEnum(THINKING_LEVELS, {
+-            description:
+-              "often described as <model>@<thinking level>. Omit to inherit your current effective thinking level / effort.",
+-          }),
++          StringEnum(THINKING_LEVELS, { description: SPAWN_THINKING_HINT }),
++        ),
++        task: Type.Optional(
++          Type.Object({}, { additionalProperties: true, description: SPAWN_TASK_HINT }),
+         ),
+         // Required, not optional: an agent that receives no message never gets a turn and
+         // would sit idle forever. Requiring the task removes that dead-on-arrival state.
+@@ -167,11 +164,17 @@
+             model: args.model,
+             thinkingLevel: args.thinkingLevel,
+             message: args.message,
++            task: args.task,
+           },
+           selfName,
+         );
+         persistRoster();
+-        return { content: [{ type: "text", text: res.msg }], details: {} };
++        return {
++          content: [{ type: "text", text: res.msg }],
++          details: {},
++          // Only a spawn-policy refusal is a tool error; other failures keep upstream's text result.
++          ...(res.rejected ? { isError: true } : {}),
++        };
+       },
+     }),
+     defineTool({
+diff -ruN a/extensions/actor-subagents/api.test.ts b/extensions/actor-subagents/api.test.ts
+--- a/extensions/actor-subagents/api.test.ts
++++ b/extensions/actor-subagents/api.test.ts
+@@ -0,0 +1,158 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { API_KEY, installApi, type SubagentsApiV1 } from "./api.ts";
++import { Engine } from "./engine.ts";
++
++const caps = { maxAgents: 8, maxSpawnDepth: 3 };
++
++/** A private stand-in for globalThis, so tests never share the process-wide slot. */
++const fresh = () => ({}) as Record<string, unknown>;
++
++const record = (name: string, over: Record<string, unknown> = {}) => ({
++	name,
++	model: "test/m",
++	handle: { deliver: async () => {}, abort: async () => {} },
++	spawnedBy: "main",
++	depth: name === "main" ? 0 : 1,
++	createdAt: 0,
++	turns: 0,
++	lastActivity: 0,
++	...over,
++});
++
++test("installApi puts a version-1 API on the global slot, once", () => {
++	const g = fresh();
++	const engine = new Engine(caps);
++	const api = installApi({ engine, retune: async () => {} }, g);
++	assert.equal((g[API_KEY] as SubagentsApiV1).version, 1);
++	assert.equal(API_KEY, "__subagentsApi_v1");
++	// A /reload installs again: same object (subscribers and the policy survive), new deps.
++	const again = installApi({ engine, retune: async () => {} }, g);
++	assert.equal(again, api);
++});
++
++test("installApi defaults to globalThis.__subagentsApi_v1", () => {
++	const g = globalThis as Record<string, unknown>;
++	const before = g[API_KEY];
++	try {
++		delete g[API_KEY];
++		installApi({ engine: new Engine(caps), retune: async () => {} });
++		assert.equal((g[API_KEY] as SubagentsApiV1).version, 1);
++	} finally {
++		g[API_KEY] = before;
++	}
++});
++
++test("registerSpawnPolicy refuses a second policy and its unregister frees the slot", () => {
++	const api = installApi({ engine: new Engine(caps), retune: async () => {} }, fresh());
++	const policy = () => ({ reject: "no" });
++	const unregister = api.registerSpawnPolicy(policy);
++	assert.equal(api.spawnPolicy(), policy);
++	assert.throws(() => api.registerSpawnPolicy(() => ({ reject: "other" })), /already registered/);
++	unregister();
++	assert.equal(api.spawnPolicy(), undefined);
++	const next = () => ({ reject: "next" });
++	api.registerSpawnPolicy(next);
++	// A stale unregister must not remove the policy registered after it.
++	unregister();
++	assert.equal(api.spawnPolicy(), next);
++});
++
++test("the policy survives a reinstall with new deps", () => {
++	const g = fresh();
++	const api = installApi({ engine: new Engine(caps), retune: async () => {} }, g);
++	const policy = () => ({ reject: "no" });
++	api.registerSpawnPolicy(policy);
++	installApi({ engine: new Engine(caps), retune: async () => {} }, g);
++	assert.equal(api.spawnPolicy(), policy);
++});
++
++test("subscribe delegates to the engine and returns an unsubscribe", () => {
++	const engine = new Engine(caps);
++	const api = installApi({ engine, retune: async () => {} }, fresh());
++	const seen: string[] = [];
++	const off = api.subscribe((e) => seen.push(e.type));
++	engine.addAgent(record("main"));
++	engine.reportError("main", "boom");
++	off();
++	engine.reportError("main", "again");
++	assert.deepEqual(seen, ["spawn", "error"]);
++});
++
++test("retune delegates to the shell's retune and surfaces its failure", async () => {
++	const calls: unknown[] = [];
++	const api = installApi(
++		{
++			engine: new Engine(caps),
++			retune: async (name, t) => {
++				calls.push([name, t]);
++				if (name === "bad") throw new Error("unknown model");
++			},
++		},
++		fresh(),
++	);
++	await api.retune("w", { model: "a/b", thinkingLevel: "high" });
++	assert.deepEqual(calls, [["w", { model: "a/b", thinkingLevel: "high" }]]);
++	await assert.rejects(api.retune("bad", { model: "x/y" }), /unknown model/);
++});
++
++test("send routes like send_message, from 'router' unless told otherwise", async () => {
++	const engine = new Engine(caps);
++	const inbox: unknown[] = [];
++	engine.addAgent(record("w", { handle: { deliver: async (m: unknown) => void inbox.push(m), abort: async () => {} } }));
++	const api = installApi({ engine, retune: async () => {} }, fresh());
++	await api.send("w", "continue");
++	await api.send("w", "hi", "lead");
++	assert.deepEqual(inbox, [
++		{ parts: [{ from: "router", content: "continue" }] },
++		{ parts: [{ from: "lead", content: "hi" }] },
++	]);
++	assert.equal(engine.getMessageMatrix().router?.w, 1);
++	await assert.rejects(api.send("ghost", "x"), /unknown agent 'ghost'/);
++});
++
++test("list reports each agent with its state, timing, usage and policy fields", () => {
++	const engine = new Engine(caps);
++	const now = 1_000_000;
++	const messages = [
++		{ role: "user", timestamp: now - 9000 },
++		{ role: "assistant", timestamp: now - 8000, usage: { cost: { total: 0.5 } } },
++		{ role: "toolResult", timestamp: now - 7000 },
++		{ role: "assistant", timestamp: now - 6000, usage: { cost: { total: 1.25 } } },
++	];
++	const view = (tokens: number | null) => ({
++		getMessages: () => messages,
++		getContextUsage: () => ({ tokens, contextWindow: 200_000, percent: 1 }),
++		subscribe: () => () => {},
++	});
++	engine.addAgent(record("main", { sessionId: "s0", thinkingLevel: "high" }));
++	engine.addAgent(
++		record("idle1", { sessionId: "s1", lastActivity: now - 4000, view: view(143_000), policyMeta: { tier: "T1" } }),
++	);
++	engine.addAgent(record("busy", { sessionId: "s2", spawnedBy: "idle1", activity: "tool", view: view(null) }));
++	engine.addAgent(record("held", { sessionId: "s3" }));
++	engine.pause("main", ["held"]);
++	const api = installApi({ engine, retune: async () => {}, now: () => now }, fresh());
++	const byName = Object.fromEntries(api.list().map((a) => [a.name, a]));
++	assert.deepEqual(byName.idle1, {
++		name: "idle1",
++		parent: "main",
++		sessionId: "s1",
++		model: "test/m",
++		thinkingLevel: undefined,
++		state: "idle",
++		idleSinceMs: 4000,
++		lastRequestAt: now - 6000,
++		contextTokens: 143_000,
++		costUsd: 1.75,
++		policyMeta: { tier: "T1" },
++	});
++	assert.equal(byName.busy?.state, "running");
++	assert.equal(byName.busy?.parent, "idle1");
++	assert.equal(byName.busy?.idleSinceMs, undefined);
++	assert.equal(byName.busy?.contextTokens, undefined);
++	assert.equal(byName.held?.state, "paused");
++	assert.equal(byName.main?.sessionId, "s0");
++	assert.equal(byName.main?.lastRequestAt, undefined);
++	assert.equal(byName.main?.costUsd, undefined);
++});
+diff -ruN a/extensions/actor-subagents/api.ts b/extensions/actor-subagents/api.ts
+--- a/extensions/actor-subagents/api.ts
++++ b/extensions/actor-subagents/api.ts
+@@ -0,0 +1,166 @@
++/**
++ * The stable, versioned surface other extensions (e.g. a task router) drive the swarm through:
++ * `globalThis.__subagentsApi_v1`. SDK-free.
++ *
++ * Installed once per process and kept across /reload: each load rebinds the deps (the live
++ * engine and the shell's retune) on the SAME object, so a consumer's reference and a registered
++ * spawn policy stay valid. Children run in-process and spawn through the same spawner, so one
++ * policy registered by the foreground covers every depth of the tree.
++ */
++import type { AgentEvent } from "./agent-event.ts";
++import type { AgentRecord } from "./agent-record.ts";
++import type { AgentStatus } from "./agent-status.ts";
++import type { Engine } from "./engine.ts";
++import type { ThinkingLevel } from "./thinking-level.ts";
++import type { ToolGuard } from "./tool-guard.ts";
++
++export const API_KEY = "__subagentsApi_v1";
++
++export type SpawnArgs = {
++	name: string;
++	systemPrompt: string;
++	message: string;
++	model?: string;
++	thinkingLevel?: ThinkingLevel;
++	task?: unknown;
++};
++export type Caller = {
++	name: string;
++	sessionId: string;
++	model: string;
++	/** Undefined only while the foreground has not reported its level yet. */
++	thinkingLevel: ThinkingLevel | undefined;
++	policyMeta?: unknown;
++	cwd: string;
++};
++export type PolicyResult =
++	| {
++			model: string;
++			thinkingLevel: ThinkingLevel;
++			briefAppend?: string;
++			/**
++			 * Allowlist of the child's regular tools (built-ins and extension tools). The orchestration
++			 * tools actor-subagents gives every child (send_message, spawn_subagent, list_subagents, ...)
++			 * always stay available, so a restricted child can still report back.
++			 */
++			tools?: string[];
++			meta?: unknown;
++			/** Checked on each of the child's tool calls; a returned reason blocks the call. */
++			toolGuard?: ToolGuard;
++	  }
++	| { reject: string };
++export type SpawnPolicy = (a: SpawnArgs, c: Caller) => PolicyResult | Promise<PolicyResult>;
++
++export type AgentInfo = {
++	name: string;
++	parent: string;
++	sessionId: string;
++	model: string;
++	thinkingLevel: ThinkingLevel | undefined;
++	state: "running" | "idle" | "paused";
++	idleSinceMs?: number;
++	lastRequestAt?: number;
++	contextTokens?: number;
++	costUsd?: number;
++	policyMeta?: unknown;
++};
++
++/**
++ * Engine events as API consumers see them: exactly one `spawn` per agent, sent once its session
++ * exists so it can carry `childSessionId` (a reservation's early spawn is held back and its
++ * `attach` is reported as the spawn instead).
++ */
++export type ApiEvent =
++	| Exclude<AgentEvent, { type: "spawn" } | { type: "attach" }>
++	| { type: "spawn"; name: string; by: string; parent: string; childSessionId?: string; ts: number };
++
++export interface SubagentsApiV1 {
++	version: 1;
++	/** Throws when a policy is already registered; the returned function unregisters this one. */
++	registerSpawnPolicy(fn: SpawnPolicy): () => void;
++	subscribe(l: (e: ApiEvent) => void): () => void;
++	/** Retune as 'main' (root authority); rejects with the reason when the retune fails. */
++	retune(name: string, t: { model?: string; thinkingLevel?: ThinkingLevel }): Promise<void>;
++	/** Deliver like send_message from `from` (default "router"); rejects when routing fails. */
++	send(to: string, text: string, from?: string): Promise<void>;
++	list(): AgentInfo[];
++}
++
++/** What the shell binds on every load. */
++export interface ApiDeps {
++	engine: Engine;
++	retune: SubagentsApiV1["retune"];
++	now?: () => number;
++}
++
++/** The installed object: the public API plus the hooks this extension itself reads. */
++export interface InstalledApi extends SubagentsApiV1 {
++	/** The registered policy, read by the spawner on every spawn. */
++	spawnPolicy(): SpawnPolicy | undefined;
++	rebind(deps: ApiDeps): void;
++}
++
++type AssistantLike = { role?: string; timestamp?: number; usage?: { cost?: { total?: number } } };
++
++/** One agent as api.list() reports it; usage is read from the live transcript. */
++export function agentInfo(rec: AgentRecord, status: AgentStatus, now: number): AgentInfo {
++	const state = status.kind === "paused" ? "paused" : status.kind === "idle" ? "idle" : "running";
++	const assistants = ((rec.view?.getMessages?.() ?? []) as AssistantLike[]).filter((m) => m.role === "assistant");
++	return {
++		name: rec.name,
++		parent: rec.spawnedBy,
++		sessionId: rec.sessionId ?? "",
++		model: rec.model,
++		thinkingLevel: rec.thinkingLevel,
++		state,
++		idleSinceMs: state === "idle" ? now - rec.lastActivity : undefined,
++		lastRequestAt: assistants.at(-1)?.timestamp,
++		contextTokens: rec.view?.getContextUsage()?.tokens ?? undefined,
++		costUsd: assistants.length ? assistants.reduce((sum, m) => sum + (m.usage?.cost?.total ?? 0), 0) : undefined,
++		policyMeta: rec.policyMeta,
++	};
++}
++
++function makeApi(initial: ApiDeps): InstalledApi {
++	let deps = initial;
++	let policy: SpawnPolicy | undefined;
++	return {
++		version: 1,
++		registerSpawnPolicy(fn) {
++			if (policy) throw new Error("a spawn policy is already registered");
++			policy = fn;
++			return () => {
++				if (policy === fn) policy = undefined;
++			};
++		},
++		subscribe: (l) =>
++			deps.engine.subscribe((e) => {
++				if (e.type === "attach" || e.type === "spawn") {
++					if (e.type === "spawn" && deps.engine.get(e.name)?.pending) return;
++					l({ type: "spawn", name: e.name, by: e.by, parent: e.by, childSessionId: e.childSessionId, ts: e.ts });
++				} else l(e);
++			}),
++		retune: (name, t) => deps.retune(name, t),
++		async send(to, text, from = "router") {
++			const result = await deps.engine.route(from, to, text);
++			if (result.outcome === "failed") throw new Error(result.reason);
++		},
++		list: () => deps.engine.list().map((rec) => agentInfo(rec, deps.engine.status(rec), (deps.now ?? Date.now)())),
++		spawnPolicy: () => policy,
++		rebind(next) {
++			deps = next;
++		},
++	};
++}
++
++/** Install the API on `g` (globalThis by default), or rebind the one already there. */
++export function installApi(deps: ApiDeps, g: Record<string, unknown> = globalThis as Record<string, unknown>): InstalledApi {
++	const existing = g[API_KEY] as InstalledApi | undefined;
++	if (existing) {
++		existing.rebind(deps);
++		return existing;
++	}
++	const api = makeApi(deps);
++	g[API_KEY] = api;
++	return api;
++}
+diff -ruN a/extensions/actor-subagents/engine.ts b/extensions/actor-subagents/engine.ts
+--- a/extensions/actor-subagents/engine.ts
++++ b/extensions/actor-subagents/engine.ts
+@@ -94,6 +94,13 @@
+ 		this.caps = caps;
+ 	}
+ 
++	/**
++	 * Local patch (error-notice-gate.ts): while set, a child's terminal error is not routed to its
++	 * parent from setStopReason; the host calls announceError later, once its gate decided the
++	 * error is not a transient one (a 429 that pi-retry retries). The `error` event is never delayed.
++	 */
++	deferErrorNotices = false;
++
+ 	private emit(e: AgentEvent): void {
+ 		this.events.push(e);
+ 		for (const l of this.listeners) l(e);
+@@ -137,7 +144,7 @@
+ 
+ 	addAgent(rec: AgentRecord): void {
+ 		this.agents.set(rec.name, rec);
+-		this.emit({ type: "spawn", name: rec.name, by: rec.spawnedBy, ts: Date.now() });
++		this.emit({ type: "spawn", name: rec.name, by: rec.spawnedBy, childSessionId: rec.sessionId, ts: Date.now() });
+ 	}
+ 
+ 	// --- Atomic reservation (prevents spawn/send, duplicate and cap races) ---
+@@ -188,6 +195,8 @@
+ 			reconfigure?: AgentRecord["reconfigure"];
+ 			systemPrompt?: string;
+ 			sessionFile?: string;
++			sessionId?: string;
++			policyMeta?: unknown;
+ 		},
+ 	): void {
+ 		const rec = this.agents.get(name);
+@@ -200,7 +209,10 @@
+ 		rec.reconfigure = opts.reconfigure;
+ 		rec.systemPrompt = opts.systemPrompt;
+ 		rec.sessionFile = opts.sessionFile;
++		rec.sessionId = opts.sessionId;
++		rec.policyMeta = opts.policyMeta;
+ 		rec.pending = false;
++		this.emit({ type: "attach", name, by: rec.spawnedBy, childSessionId: rec.sessionId, ts: Date.now() });
+ 		const buffered = rec.buffer ?? [];
+ 		rec.buffer = undefined;
+ 		// A pause can land while the session is being created. The reservation's messages join the
+@@ -703,7 +715,13 @@
+ 		if (!entersError) return;
+ 		rec.errorReason = detail ?? "the turn failed after the SDK's retries";
+ 		this.emit({ type: "error", name, reason: rec.errorReason, ts: Date.now() });
+-		this.announce({ kind: "error", target: asTarget(rec), reason: rec.errorReason });
++		if (!this.deferErrorNotices) this.announceError(name, rec.errorReason);
++	}
++
++	/** Route the scheduler's error message to the live direct parent of `name` (lifecycle-notice.ts decides who). */
++	announceError(name: string, reason: string): void {
++		const rec = this.agents.get(name);
++		if (rec) this.announce({ kind: "error", target: asTarget(rec), reason });
+ 	}
+ 
+ 	/** Tell the parents what a lifecycle change did to their children (lifecycle-notice.ts decides). */
+diff -ruN a/extensions/actor-subagents/error-notice-gate.test.ts b/extensions/actor-subagents/error-notice-gate.test.ts
+--- a/extensions/actor-subagents/error-notice-gate.test.ts
++++ b/extensions/actor-subagents/error-notice-gate.test.ts
+@@ -0,0 +1,205 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import type { AgentEvent } from "./agent-event.ts";
++import type { RoutedAgentMessage } from "./agent-message.ts";
++import { Engine } from "./engine.ts";
++import { createErrorNoticeGate } from "./error-notice-gate.ts";
++
++/** Hand-driven clock: timers fire only when the test advances time. */
++function fakeClock() {
++	let now = 0;
++	let next = 0;
++	const timers = new Map<number, { at: number; fn: () => void }>();
++	return {
++		set: (fn: () => void, ms: number) => {
++			timers.set(++next, { at: now + ms, fn });
++			return next;
++		},
++		clear: (id: unknown) => void timers.delete(id as number),
++		advance(ms: number) {
++			now += ms;
++			for (const [id, t] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
++				if (t.at > now) continue;
++				timers.delete(id);
++				t.fn();
++			}
++		},
++	};
++}
++
++/** A parent 'main' with child 'q1', the gate wired to the engine the way index.ts wires it. */
++function setup() {
++	const engine = new Engine({ maxAgents: 8, maxSpawnDepth: 3 });
++	// What the parent actually receives: upstream routes a child's terminal error to it through
++	// Engine.route (a scheduler message), which the gate only delays.
++	const delivered: RoutedAgentMessage[] = [];
++	const base = { model: "m", handle: { deliver: async () => {}, abort: async () => {} }, createdAt: 0, turns: 0, lastActivity: 0 };
++	engine.addAgent({
++		...base,
++		name: "main",
++		spawnedBy: "main",
++		depth: 0,
++		handle: { deliver: async (m: RoutedAgentMessage) => void delivered.push(m), abort: async () => {} },
++	});
++	engine.addAgent({ ...base, name: "q1", spawnedBy: "main", depth: 1 });
++	engine.deferErrorNotices = true;
++	const clock = fakeClock();
++	const notices: string[] = [];
++	const events: AgentEvent[] = [];
++	const gate = createErrorNoticeGate({
++		graceMs: 7000,
++		notify: (e) => {
++			notices.push(`${e.name}: ${e.reason}`);
++			engine.announceError(e.name, e.reason);
++		},
++		setTimer: clock.set,
++		clearTimer: clock.clear,
++	});
++	engine.subscribe((e) => {
++		events.push(e);
++		gate.onEngineEvent(e);
++	});
++	/** One failed run of the child, as the spawner reports it: a fresh turn, then the error. */
++	const failedRun = (reason = "429 rate limited") => {
++		engine.recordTurnStart("q1");
++		engine.beginTurn("q1");
++		engine.reportError("q1", reason);
++	};
++	const assistant = (stopReason: string) =>
++		gate.onSessionEvent("q1", { type: "message_end", message: { role: "assistant", stopReason } });
++	return { engine, clock, notices, delivered, events, gate, failedRun, assistant };
++}
++
++test("a transient error the child recovers from within the grace never reaches the parent", () => {
++	const { clock, notices, events, failedRun, assistant } = setup();
++	failedRun();
++	// Subscribers (the router) still see the error at once; only the parent message waits.
++	assert.equal(events.filter((e) => e.type === "error").length, 1);
++	clock.advance(3000);
++	assistant("toolUse");
++	clock.advance(60_000);
++	assert.deepEqual(notices, []);
++});
++
++test("an assistant message that failed itself is no recovery", () => {
++	const { clock, notices, failedRun, assistant } = setup();
++	failedRun();
++	assistant("error");
++	clock.advance(7000);
++	assert.deepEqual(notices, ["q1: 429 rate limited"]);
++});
++
++test("a run of retried errors that pi-retry gives up on is one notice, sent at the give-up", () => {
++	const { clock, notices, gate, failedRun } = setup();
++	gate.onRetry("q1", "started");
++	for (let i = 0; i < 5; i++) {
++		failedRun(`429 attempt ${i}`);
++		clock.advance(2000); // each retry lands within the grace, so the notice keeps waiting
++	}
++	assert.deepEqual(notices, []);
++	gate.onRetry("q1", "cancelled");
++	assert.deepEqual(notices, ["q1: 429 attempt 4"]);
++	clock.advance(60_000);
++	assert.equal(notices.length, 1);
++	// A later failure, after a new turn (e.g. the parent said "continue"), is news again.
++	failedRun("boom");
++	clock.advance(7000);
++	assert.deepEqual(notices, ["q1: 429 attempt 4", "q1: boom"]);
++});
++
++test("the error that settles the given-up attempt is not a second notice", () => {
++	const { engine, clock, notices, gate, failedRun } = setup();
++	gate.onRetry("q1", "started");
++	failedRun("429 first");
++	// Last attempt: pi-retry gives up inside its agent_end, then the run settles in error.
++	engine.recordTurnStart("q1");
++	engine.beginTurn("q1");
++	gate.onRetry("q1", "cancelled");
++	engine.reportError("q1", "429 final");
++	clock.advance(60_000);
++	assert.deepEqual(notices, ["q1: 429 first"]);
++});
++
++test("retries that end in success leave the parent alone", () => {
++	const { clock, notices, gate, failedRun } = setup();
++	gate.onRetry("q1", "started");
++	failedRun();
++	clock.advance(2000);
++	gate.onRetry("q1", "completed");
++	clock.advance(60_000);
++	assert.deepEqual(notices, []);
++});
++
++test("an error with no retry and no recovery is one notice after the grace", () => {
++	const { clock, notices, failedRun } = setup();
++	failedRun("boom");
++	clock.advance(6999);
++	assert.deepEqual(notices, []);
++	clock.advance(1);
++	assert.deepEqual(notices, ["q1: boom"]);
++	clock.advance(60_000);
++	assert.equal(notices.length, 1);
++});
++
++test("a retry that settles in error without a cancel signal is still one notice", () => {
++	const { clock, notices, gate, failedRun } = setup();
++	gate.onRetry("q1", "started");
++	failedRun("429 last");
++	clock.advance(7000);
++	assert.deepEqual(notices, ["q1: 429 last"]);
++});
++
++test("a killed child's pending notice is dropped", async () => {
++	const { engine, clock, notices, failedRun } = setup();
++	failedRun();
++	await engine.kill("main", ["q1"]);
++	clock.advance(7000);
++	assert.deepEqual(notices, []);
++});
++
++test("the parent gets upstream's routed scheduler error, only after the grace", () => {
++	const { clock, delivered, failedRun } = setup();
++	failedRun("boom");
++	// The engine would have routed it at once; the gate holds it back.
++	clock.advance(6999);
++	assert.equal(delivered.length, 0);
++	clock.advance(1);
++	assert.equal(delivered.length, 1);
++	const [part] = delivered[0].parts;
++	assert.equal(part.from, "scheduler");
++	assert.equal(part.actionable, true);
++	assert.match(part.content, /your subagent q1 entered the error state: boom/);
++});
++
++test("a recovered transient error routes nothing to the parent", () => {
++	const { clock, delivered, failedRun, assistant } = setup();
++	failedRun("429 rate limited");
++	assistant("toolUse");
++	clock.advance(60_000);
++	assert.equal(delivered.length, 0);
++});
++
++test("without the gate the engine routes the error at once, as upstream does", () => {
++	const engine = new Engine({ maxAgents: 8, maxSpawnDepth: 3 });
++	const delivered: RoutedAgentMessage[] = [];
++	const base = { model: "m", handle: { deliver: async () => {}, abort: async () => {} }, createdAt: 0, turns: 0, lastActivity: 0 };
++	engine.addAgent({
++		...base,
++		name: "main",
++		spawnedBy: "main",
++		depth: 0,
++		handle: { deliver: async (m: RoutedAgentMessage) => void delivered.push(m), abort: async () => {} },
++	});
++	engine.addAgent({ ...base, name: "q1", spawnedBy: "main", depth: 1 });
++	engine.reportError("q1", "boom");
++	assert.equal(delivered.length, 1);
++	assert.equal(engine.deferErrorNotices, false);
++});
++
++test("announcing the error of an agent that is gone reports nothing", async () => {
++	const { engine, delivered, failedRun } = setup();
++	failedRun();
++	await engine.kill("main", ["q1"]);
++	engine.announceError("q1", "late");
++	assert.equal(delivered.length, 0);
++});
+diff -ruN a/extensions/actor-subagents/error-notice-gate.ts b/extensions/actor-subagents/error-notice-gate.ts
+--- a/extensions/actor-subagents/error-notice-gate.ts
++++ b/extensions/actor-subagents/error-notice-gate.ts
+@@ -0,0 +1,81 @@
++/**
++ * Debounces the "your child entered the error state" message to the parent. SDK-free.
++ *
++ * A child whose provider throttles it (429) errors once per attempt while pi-retry retries it
++ * inline, and every one of those errors used to wake the parent: 15 notices and 18 parent turns
++ * for a 6-step child, with the parent escalating long before the child gave up. So a notice now
++ * waits `graceMs` of quiet: a later error restarts the wait, a successful assistant message or
++ * pi-retry's `completed` drops it, pi-retry's `cancelled` (it gave up) sends it at once. After a
++ * notice, further errors stay silent until the child starts a new turn, so the error that settles
++ * the given-up attempt is not reported twice.
++ *
++ * Only the parent MESSAGE is gated: engine `error` events reach every subscriber immediately.
++ */
++import type { AgentEvent } from "./agent-event.ts";
++
++export type RetrySignal = "started" | "completed" | "cancelled";
++
++type Notice = { name: string; reason: string };
++
++export interface ErrorNoticeGate {
++	onEngineEvent(e: AgentEvent): void;
++	/** A child session event; a successful assistant message counts as recovery. */
++	onSessionEvent(name: string, ev: { type: string; message?: unknown }): void;
++	/** pi-retry's lifecycle in the child session (`pi-retry:<signal>` on its event bus). */
++	onRetry(name: string, signal: RetrySignal): void;
++}
++
++export function createErrorNoticeGate(opts: {
++	graceMs: number;
++	notify: (e: Notice) => void;
++	setTimer?: (fn: () => void, ms: number) => unknown;
++	clearTimer?: (id: unknown) => void;
++}): ErrorNoticeGate {
++	const setTimer =
++		opts.setTimer ??
++		((fn: () => void, ms: number) => {
++			const t = setTimeout(fn, ms);
++			t.unref?.(); // a pending notice must not keep a print-mode pi alive
++			return t;
++		});
++	const clearTimer = opts.clearTimer ?? ((id: unknown) => clearTimeout(id as ReturnType<typeof setTimeout>));
++	const pending = new Map<string, { notice: Notice; timer: unknown }>();
++	// Children already told about, silent until their next turn.
++	const notified = new Set<string>();
++
++	const drop = (name: string) => {
++		const p = pending.get(name);
++		if (p) clearTimer(p.timer);
++		pending.delete(name);
++	};
++	const flush = (name: string) => {
++		const p = pending.get(name);
++		if (!p) return;
++		drop(name);
++		notified.add(name);
++		opts.notify(p.notice);
++	};
++
++	return {
++		onEngineEvent(e) {
++			if (e.type === "turn") notified.delete(e.name);
++			else if (e.type === "kill") {
++				drop(e.name);
++				notified.delete(e.name);
++			} else if (e.type === "error" && !notified.has(e.name)) {
++				drop(e.name);
++				const notice = { name: e.name, reason: e.reason };
++				pending.set(e.name, { notice, timer: setTimer(() => flush(e.name), opts.graceMs) });
++			}
++		},
++		onSessionEvent(name, ev) {
++			if (ev.type !== "message_end") return;
++			const m = ev.message as { role?: string; stopReason?: string } | undefined;
++			if (m?.role === "assistant" && m.stopReason !== "error" && m.stopReason !== "aborted") drop(name);
++		},
++		onRetry(name, signal) {
++			if (signal === "completed") drop(name);
++			else if (signal === "cancelled") flush(name);
++		},
++	};
++}
+diff -ruN a/extensions/actor-subagents/feed.test.ts b/extensions/actor-subagents/feed.test.ts
+--- a/extensions/actor-subagents/feed.test.ts
++++ b/extensions/actor-subagents/feed.test.ts
+@@ -250,5 +250,6 @@
+ test("formatSnapshot appends extension statuses with their keys at the end of the row", () => {
+ 	const view = { getContextUsage: () => undefined, getExtensionStatuses: () => ({ "bash-async": "⏳2", lsp: "3 errors" }) };
+ 	const agents = [rec({ name: "coder", view: view as unknown as AgentRecord["view"] })];
+-	assert.match(snapshot(agents, "main"), /\(by main\) {2}bash-async: ⏳2, lsp: 3 errors$/m);
++	// The usage column (idle=, cache=, ctx=, $) sits before the extensions, which stay last.
++	assert.match(snapshot(agents, "main"), /\(by main\)(?: {2}idle=\S+)? {2}bash-async: ⏳2, lsp: 3 errors$/m);
+ });
+diff -ruN a/extensions/actor-subagents/feed.ts b/extensions/actor-subagents/feed.ts
+--- a/extensions/actor-subagents/feed.ts
++++ b/extensions/actor-subagents/feed.ts
+@@ -3,6 +3,7 @@
+  * No pi/TUI dependency; the strings are rendered into the UI in index.ts.
+  */
+ import type { OrderedAgent } from "./agent-order.ts";
++import { type AgentInfo, agentInfo } from "./api.ts";
+ import { type AgentStatus, formatStatus, formatStatusDetail } from "./agent-status.ts";
+ import type { AgentRecord } from "./agent-record.ts";
+ import type { ControlResult, EngineResumeResult } from "./control-result.ts";
+@@ -20,6 +21,23 @@
+ 	return `${Math.floor(m / 60)}h`;
+ }
+ 
++/** Anthropic's prompt-cache lifetime: a request within it reads the cache, later ones rebuild it. */
++const CACHE_TTL_MS = 5 * 60_000;
++
++/** `idle=4m cache=warm(1m left) ctx=143k $2.10`: what waking this agent now would cost. */
++function formatUsage(info: AgentInfo, now: number): string {
++	const parts: string[] = [];
++	if (info.idleSinceMs !== undefined) parts.push(`idle=${formatAge(info.idleSinceMs)}`);
++	if (info.lastRequestAt !== undefined) {
++		const left = CACHE_TTL_MS - (now - info.lastRequestAt);
++		parts.push(left > 0 ? `cache=warm(${formatAge(left)} left)` : "cache=cold");
++	}
++	const tokens = info.contextTokens;
++	if (tokens !== undefined) parts.push(`ctx=${tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : tokens}`);
++	if (info.costUsd !== undefined) parts.push(`$${info.costUsd.toFixed(2)}`);
++	return parts.length ? `  ${parts.join(" ")}` : "";
++}
++
+ /** Relation of an agent to the viewer, for orientation in deep hierarchies. */
+ function relTo(a: AgentRecord, viewer: string, viewerParent: string | undefined): string {
+ 	if (a.name === viewer) return "self";
+@@ -71,6 +89,7 @@
+ 		agents.map((a) => statusOf(a).length),
+ 		STATUS_CAP,
+ 	);
++	const usageOf = (a: AgentRecord) => formatUsage(agentInfo(a, status(a), now), now);
+ 	const rows = ordered.map((o) => {
+ 		const a = o.agent;
+ 		const status = statusOf(a);
+@@ -89,7 +108,7 @@
+ 		return (
+ 			`  ${nameCell(o).padEnd(nameW)} ${rel.padEnd(6)} ${fit(status, statusW)} ` +
+ 			`turns:${turns.padEnd(3)} ctx:${ctx.padEnd(4)} last ${formatAge(now - a.lastActivity).padEnd(4)} ` +
+-			`${model}  ${origin}${extensions ? `  ${extensions}` : ""}`
++			`${model}  ${origin}${usageOf(a)}${extensions ? `  ${extensions}` : ""}`
+ 		);
+ 	});
+ 	return ["agents:", ...rows].join("\n");
+diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/index.ts
+--- a/extensions/actor-subagents/index.ts
++++ b/extensions/actor-subagents/index.ts
+@@ -27,10 +27,12 @@
+ import { orderAgents } from "./agent-order.ts";
+ import { childPromptOptions } from "./child-prompt.ts";
+ import { makeAgentTools } from "./agent-tools.ts";
++import { installApi } from "./api.ts";
+ import type { AgentHandle } from "./agent-record.ts";
+ import type { EngineResumeResult } from "./control-result.ts";
+ import { authorityOf } from "./authorize.ts";
+ import { Engine } from "./engine.ts";
++import { createErrorNoticeGate, type ErrorNoticeGate } from "./error-notice-gate.ts";
+ import {
+   formatControlResult,
+   formatResumeResult,
+@@ -58,7 +60,12 @@
+   unknownModelMessage,
+ } from "./resolve-model.ts";
+ import { createAgentModelSetter } from "./set-agent-model.ts";
+-import { parseSettings, type Settings } from "./settings.ts";
++import {
++  DEFAULT_ERROR_NOTICE_GRACE_MS,
++  parseErrorNoticeGraceMs,
++  parseSettings,
++  type Settings,
++} from "./settings.ts";
+ import {
+   createSpawner,
+   type ResolvedModel,
+@@ -66,6 +73,7 @@
+ } from "./spawner.ts";
+ import type { ThinkingLevel } from "./thinking-level.ts";
+ import { timestampToolResult } from "./tool-timestamp.ts";
++import { childToolAllowlist, type ToolGuard, toolGuardExtensions } from "./tool-guard.ts";
+ 
+ /**
+  * Gives one session a sense of elapsed time by stamping the wall-clock start and finish times
+@@ -90,6 +98,7 @@
+   });
+ }
+ 
++const settingsFile = () => path.join(getAgentDir(), "actor-subagents", "settings.json");
+ /**
+  * Read this extension's settings, next to pi's own agent config (getAgentDir() honors pi's
+  * agent-dir override, so a test or alternate profile stays self-contained).
+@@ -97,13 +106,33 @@
+  * means per field (defaults for caps, nothing for childExtensions).
+  */
+ function readSettings(): Settings {
+-  const file = path.join(getAgentDir(), "actor-subagents", "settings.json");
+   try {
+-    return parseSettings(fs.readFileSync(file, "utf8"));
++    return parseSettings(fs.readFileSync(settingsFile(), "utf8"));
+   } catch {
+     return parseSettings("");
+   }
+ }
++function readErrorNoticeGraceMs(): number {
++  try {
++    return parseErrorNoticeGraceMs(fs.readFileSync(settingsFile(), "utf8"));
++  } catch {
++    return DEFAULT_ERROR_NOTICE_GRACE_MS;
++  }
++}
++
++// The live load's error-notice gate. Child sessions outlive a /reload with the hooks of the load
++// that built them, so they reach the gate through this slot (like MAIN_SINK_KEY) instead of a
++// captured one; each load overwrites it with its own.
++const ERROR_GATE_KEY = "__subagentsErrorGate_v1";
++const currentErrorGate = () =>
++  (globalThis as Record<string, unknown>)[ERROR_GATE_KEY] as ErrorNoticeGate | undefined;
++
++/** Inline child extension: forwards pi-retry's lifecycle in that child to the error gate. */
++const forwardRetrySignals = (name: string) => (pi: ExtensionAPI) => {
++  for (const signal of ["started", "completed", "cancelled"] as const) {
++    pi.events.on(`pi-retry:${signal}`, () => currentErrorGate()?.onRetry(name, signal));
++  }
++};
+ 
+ // Fired to each mid-turn-paused agent on resume to re-trigger its work. Fixed text
+ // (not main-authored) so resume stays a single tool call from main's side.
+@@ -170,7 +199,11 @@
+ //      append/busy). A v26 instance would treat a string flag as foreign and lack these methods.
+ // v28: terminal errors route actionable scheduler messages instead of silent notices; v27
+ //      would retain the old announce/route methods after /reload and never wake a parent.
+-const ENGINE_KEY = "__subagentsEngine_v28";
++// v28-policy1 (local spawn-policy patch): attach() stores sessionId + policyMeta and emits an
++//      `attach` event (the api's spawn event with childSessionId), addAgent's spawn event carries
++//      the record's sessionId, and the engine gains deferErrorNotices/announceError (the error
++//      notice gate). Upstream's v28 instance lacks them.
++const ENGINE_KEY = "__subagentsEngine_v28_policy1";
+ 
+ function getEngine(): Engine {
+   const g = globalThis as Record<string, unknown>;
+@@ -457,8 +490,22 @@
+     }
+   };
+ 
++  // A transient child error (e.g. a 429 that pi-retry retries) must not wake the parent. Upstream
++  // routes a child's terminal error to its parent from inside the engine; with deferErrorNotices
++  // the engine leaves that to this gate, which debounces it (error-notice-gate.ts) and then calls
++  // engine.announceError, the same routed scheduler message. The engine event is not delayed.
++  engine.deferErrorNotices = true;
++  const errorGate = createErrorNoticeGate({
++    graceMs: readErrorNoticeGraceMs(),
++    notify: ({ name, reason }) => engine.announceError(name, reason),
++  });
++  (globalThis as Record<string, unknown>)[ERROR_GATE_KEY] = errorGate;
++
+   // Update the status on every engine event.
+-  const unsubscribeEngine = engine.subscribe(() => updateStatus());
++  const unsubscribeEngine = engine.subscribe((e) => {
++    errorGate.onEngineEvent(e);
++    updateStatus();
++  });
+   installProcessHooks(unsubscribeEngine);
+ 
+   // Policy lives in resolve-model.ts (pure); this only binds it to the live registry.
+@@ -482,9 +529,11 @@
+       spawnedBy: string;
+       model: unknown;
+       thinkingLevel?: ThinkingLevel;
++      tools?: string[];
++      toolGuard?: ToolGuard;
+     },
+     existingFile?: string,
+-  ): Promise<{ session: SessionLike; sessionFile?: string }> => {
++  ): Promise<{ session: SessionLike; sessionFile?: string; sessionId?: string }> => {
+     // Children get the human's settings as VALUES, through a manager whose writes go nowhere.
+     // pi's session.setModel()/setThinkingLevel() persist the new default into settings.json, so
+     // a file-backed child manager would let a retuned subagent silently change what the next
+@@ -512,6 +561,8 @@
+       additionalExtensionPaths: settings.childExtensions,
+       extensionFactories: [
+         { name: "subagent-timestamps", factory: registerToolTimestamps },
++        { name: "subagent-retry-signals", factory: forwardRetrySignals(spec.name) },
++        ...toolGuardExtensions(spec.toolGuard),
+       ],
+       ...childPromptOptions(spec.name, spec.systemPrompt, spec.spawnedBy),
+     });
+@@ -543,16 +594,20 @@
+     }
+ 
+     // Leave the built-in tool allowlist unset so the agent inherits the full default
+-    // foreground toolset, plus the custom agent tools via customTools.
++    // foreground toolset, plus the custom agent tools via customTools -- unless the spawn
++    // policy restricted it (the orchestration tools always stay; see childToolAllowlist).
+     const modelRuntime = await modelRuntimeReady;
++    const customTools = toolsFor(spec.name);
++    const tools = childToolAllowlist(spec.tools, customTools);
+     const { session } = await createAgentSession({
++      ...(tools ? { tools } : {}),
+       cwd,
+       model: spec.model as NonNullable<
+         Parameters<typeof createAgentSession>[0]
+       >["model"],
+       thinkingLevel: spec.thinkingLevel,
+       modelRuntime,
+-      customTools: toolsFor(spec.name),
++      customTools,
+       resourceLoader: loader,
+       sessionManager: sm,
+       settingsManager: childSettings,
+@@ -612,7 +667,11 @@
+       getContextUsage: () => session.getContextUsage(),
+       getExtensionStatuses: () => extensionStatuses,
+     };
+-    return { session: managedSession, sessionFile: sm.getSessionFile() };
++    return {
++      session: managedSession,
++      sessionFile: sm.getSessionFile(),
++      sessionId: sm.getSessionId(),
++    };
+   };
+ 
+   // Models offered for retuning and named in "unknown model" errors: the session's scoped
+@@ -629,6 +688,9 @@
+     createSession,
+     onActivity: updateStatus,
+     listAvailableModels: listModels,
++    spawnPolicy: () => api.spawnPolicy(),
++    onSessionEvent: (name, ev) => currentErrorGate()?.onSessionEvent(name, ev),
++    cwd: () => cwd,
+   });
+ 
+   // Retuning a running agent (the set_subagent_model tool and the panel's model/effort keys).
+@@ -649,6 +711,15 @@
+     persistRoster: () => persistRoster(),
+   });
+ 
++  // globalThis.__subagentsApi_v1 for other extensions; a /reload rebinds the same object.
++  const api = installApi({
++    engine,
++    retune: async (name, t) => {
++      const result = await setAgentModel("main", { name, ...t });
++      if (!result.ok) throw new Error(result.msg);
++    },
++  });
++
+   // Overwrite roster.json with current background membership (called after spawn/kill).
+   // Best-effort: persistence must never break the swarm.
+   const persistRoster = (): void => {
+@@ -692,7 +763,7 @@
+       // Placed before the session is built, so its preamble names the adopting parent too.
+       const placement = restoredPlacement(entry.spawnedBy, engine.get(entry.spawnedBy)?.depth);
+       try {
+-        const { session, sessionFile } = await createSession(
++        const { session, sessionFile, sessionId } = await createSession(
+           sessionSpecFromRoster({ ...entry, ...placement }, resolved.model),
+           entry.sessionFile,
+         );
+@@ -702,6 +773,7 @@
+           model: `${resolved.provider}/${resolved.id}`,
+           systemPrompt: entry.systemPrompt,
+           sessionFile: sessionFile ?? entry.sessionFile,
++          sessionId,
+           session,
+           pausedMidTurn:
+             deriveStatus(session.messages as RawMessage[]) === "pausedMidTurn",
+@@ -804,13 +876,18 @@
+       (s) => `${s.model.provider}/${s.model.id}`,
+     );
+     // Locate this main session's subagents dir (persistence + restore are keyed by it).
++    let sessionId: string | undefined;
+     try {
+       const id = ctx.sessionManager.getSessionId();
++      sessionId = id;
+       const dir = ctx.sessionManager.getSessionDir();
+       subDir = id && dir ? subagentsDir(dir, id) : undefined;
+     } catch {
+       subDir = undefined;
+     }
++    // The singleton 'main' record outlives a session switch, so its id is refreshed here.
++    const mainRecord = engine.get("main");
++    if (mainRecord) mainRecord.sessionId = sessionId;
+     if (!engine.has("main")) {
+       const mainHandle: AgentHandle = {
+         // via the globalThis indirection so the singleton handle never uses a stale pi.
+@@ -827,6 +904,7 @@
+           ? `${foregroundModel.provider}/${foregroundModel.id}`
+           : "(foreground)",
+         thinkingLevel: foregroundThinkingLevel,
++        sessionId,
+         handle: mainHandle,
+         spawnedBy: "main",
+         depth: 0,
+diff -ruN a/extensions/actor-subagents/settings-grace.test.ts b/extensions/actor-subagents/settings-grace.test.ts
+--- a/extensions/actor-subagents/settings-grace.test.ts
++++ b/extensions/actor-subagents/settings-grace.test.ts
+@@ -0,0 +1,15 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import { DEFAULT_ERROR_NOTICE_GRACE_MS, parseErrorNoticeGraceMs } from "./settings.ts";
++
++test("errorNoticeGraceMs defaults to 7 s (pi-retry's 2 s max delay + 5 s)", () => {
++	assert.equal(DEFAULT_ERROR_NOTICE_GRACE_MS, 7000);
++	for (const input of ["", "not json", "{}", JSON.stringify({ errorNoticeGraceMs: -1 }), JSON.stringify({ errorNoticeGraceMs: "9" })]) {
++		assert.equal(parseErrorNoticeGraceMs(input), 7000, input);
++	}
++});
++
++test("errorNoticeGraceMs is read from the flat settings file; 0 turns the gate off", () => {
++	assert.equal(parseErrorNoticeGraceMs(JSON.stringify({ errorNoticeGraceMs: 12000 })), 12000);
++	assert.equal(parseErrorNoticeGraceMs(JSON.stringify({ errorNoticeGraceMs: 0 })), 0);
++});
+diff -ruN a/extensions/actor-subagents/settings.ts b/extensions/actor-subagents/settings.ts
+--- a/extensions/actor-subagents/settings.ts
++++ b/extensions/actor-subagents/settings.ts
+@@ -69,3 +69,20 @@
+ 		childExtensionStatusKeys: childExtensionStatusKeys(value?.childExtensionStatusKeys),
+ 	};
+ }
++
++/**
++ * How long a child's error waits for a recovery before its parent is told (error-notice-gate.ts):
++ * pi-retry's child max backoff (2 s) plus 5 s. Read separately from parseSettings so its result
++ * keeps its shape. A non-negative integer; anything else means the default, 0 disables the wait.
++ */
++export const DEFAULT_ERROR_NOTICE_GRACE_MS = 7000;
++
++export function parseErrorNoticeGraceMs(json: string): number {
++	let value: unknown;
++	try {
++		value = (JSON.parse(json) as Record<string, unknown> | null)?.errorNoticeGraceMs;
++	} catch {
++		// Same as parseSettings: an unreadable file is an empty one.
++	}
++	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : DEFAULT_ERROR_NOTICE_GRACE_MS;
++}
+diff -ruN a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/spawner.ts
+--- a/extensions/actor-subagents/spawner.ts
++++ b/extensions/actor-subagents/spawner.ts
+@@ -5,12 +5,14 @@
+  */
+ import type { ExtensionStatuses } from "./extension-status.ts";
+ import type { RoutedAgentMessage } from "./agent-message.ts";
++import type { Caller, SpawnPolicy } from "./api.ts";
+ import { formatStatusDetail, type StopReason } from "./agent-status.ts";
+ import type { AgentHandle, AgentRecord, AgentView } from "./agent-record.ts";
+ import type { Engine } from "./engine.ts";
+ import { formatReceiverStatus } from "./feed.ts";
+ import { unknownModelMessage } from "./resolve-model.ts";
+ import { formatModelThinking, type ThinkingLevel } from "./thinking-level.ts";
++import type { ToolGuard } from "./tool-guard.ts";
+ 
+ export type { ThinkingLevel } from "./thinking-level.ts";
+ 
+@@ -79,6 +81,8 @@
+ 	thinkingLevel?: ThinkingLevel;
+ 	/** Optional first message: delivered atomically to the new agent right after spawn. */
+ 	message?: string;
++	/** Opaque task card, passed through to the spawn policy only. */
++	task?: unknown;
+ }
+ 
+ export interface SpawnerDeps {
+@@ -99,9 +103,18 @@
+ 		spawnedBy: string;
+ 		model: unknown;
+ 		thinkingLevel?: ThinkingLevel;
+-	}) => Promise<{ session: SessionLike; sessionFile?: string }>;
++		/** Tool allowlist set by the spawn policy; undefined keeps the full default toolset. */
++		tools?: string[];
++		toolGuard?: ToolGuard;
++	}) => Promise<{ session: SessionLike; sessionFile?: string; sessionId?: string }>;
+ 	/** Called after every relevant activity (e.g. refresh the status footer). */
+ 	onActivity?: () => void;
++	/** The registered spawn policy (api.ts), read per spawn; none means inherit as upstream. */
++	spawnPolicy?: () => SpawnPolicy | undefined;
++	/** Working directory reported to the policy as `caller.cwd`. */
++	cwd?: () => string;
++	/** Every child session event, by child name (the error-notice gate watches for recovery). */
++	onSessionEvent?: (name: string, ev: { type: string; message?: unknown }) => void;
+ }
+ 
+ /** Metadata to re-register an agent from a rehydrated (disk-loaded) session on restart. */
+@@ -112,13 +125,15 @@
+ 	model: string; // "provider/id" display string
+ 	systemPrompt: string;
+ 	sessionFile: string;
++	sessionId?: string;
+ 	session: SessionLike;
+ 	/** Derived from the transcript tail: true => resume re-triggers it; false => idle. */
+ 	pausedMidTurn: boolean;
+ }
+ 
+ export interface Spawner {
+-	spawnAgent: (spec: SpawnSpec, spawnerName: string) => Promise<{ ok: boolean; msg: string }>;
++	/** `rejected` marks a refusal by the spawn policy (the tool reports it as an error). */
++	spawnAgent: (spec: SpawnSpec, spawnerName: string) => Promise<{ ok: boolean; msg: string; rejected?: true }>;
+ 	/** Re-register an agent from a restored session (used by restart resume). */
+ 	restoreAgent: (spec: RestoreSpec) => void;
+ }
+@@ -222,6 +237,7 @@
+ 				engine.setStopReason(name, stopReason, outcome?.errorMessage);
+ 				engine.flushNotices(name);
+ 			}
++			deps.onSessionEvent?.(name, ev);
+ 			onActivity?.();
+ 		});
+ 	};
+@@ -322,6 +338,7 @@
+ 			reconfigure,
+ 			systemPrompt: spec.systemPrompt,
+ 			sessionFile: spec.sessionFile,
++			sessionId: spec.sessionId,
+ 			spawnedBy: spec.spawnedBy,
+ 			depth: spec.depth,
+ 			createdAt: Date.now(),
+@@ -331,11 +348,11 @@
+ 		});
+ 	};
+ 
+-	const spawnAgent = async (spec: SpawnSpec, spawnerName: string): Promise<{ ok: boolean; msg: string }> => {
++	const spawnAgent: Spawner["spawnAgent"] = async (spec, spawnerName) => {
+ 		const spawner = engine.get(spawnerName);
+-		const inheritRef = spec.model ?? spawner?.model;
++		let inheritRef = spec.model ?? spawner?.model;
+ 		// The Map Is Not the Territory: inherit the observed effective level, not prior intent.
+-		const thinkingLevel = spec.thinkingLevel ?? spawner?.thinkingLevel;
++		let thinkingLevel = spec.thinkingLevel ?? spawner?.thinkingLevel;
+ 
+ 		// 1) Reserve the name synchronously (atomic: duplicate/cap/depth) — closes races.
+ 		const reserved = engine.reserve(spec.name, spawnerName);
+@@ -343,22 +360,62 @@
+ 		// Identity, not just the name, distinguishes this reservation from a later re-spawn.
+ 		const reservation = engine.get(spec.name);
+ 
++		// 1b) The spawn policy, if one is registered, decides model and effort (after the reservation,
++		// so a refused name or a full swarm never reaches it). A refusal frees the name.
++		let message = spec.message;
++		let tools: string[] | undefined;
++		let toolGuard: ToolGuard | undefined;
++		let policyMeta: unknown;
++		const policy = deps.spawnPolicy?.();
++		if (policy) {
++			const caller: Caller = {
++				name: spawnerName,
++				sessionId: spawner?.sessionId ?? "",
++				model: spawner?.model ?? "",
++				thinkingLevel: spawner?.thinkingLevel,
++				policyMeta: spawner?.policyMeta,
++				cwd: deps.cwd?.() ?? process.cwd(),
++			};
++			const { name, systemPrompt, model, task } = spec;
++			const args = { name, systemPrompt, message: spec.message ?? "", model, thinkingLevel: spec.thinkingLevel, task };
++			let decision: Awaited<ReturnType<SpawnPolicy>>;
++			try {
++				decision = await policy(args, caller);
++			} catch (e) {
++				decision = { reject: `spawn policy failed: ${e instanceof Error ? e.message : String(e)}` };
++			}
++			if ("reject" in decision) {
++				if (engine.get(spec.name) === reservation) engine.release(spec.name);
++				return { ok: false, rejected: true, msg: `error: ${decision.reject}` };
++			}
++			inheritRef = decision.model;
++			thinkingLevel = decision.thinkingLevel;
++			if (decision.briefAppend) message = message ? `${message}\n\n${decision.briefAppend}` : decision.briefAppend;
++			tools = decision.tools;
++			toolGuard = decision.toolGuard;
++			policyMeta = decision.meta;
++		}
++
+ 		const resolved = resolveModel(inheritRef);
+ 		if (!resolved) {
+-			engine.release(spec.name);
++			// The policy await above lets a kill or re-spawn of this name land first.
++			if (engine.get(spec.name) === reservation) engine.release(spec.name);
+ 			return { ok: false, msg: `error: ${unknownModelMessage(inheritRef, listAvailableModels?.() ?? [])}` };
+ 		}
+ 
+ 		// 2) Slow session creation (await). A concurrent send_message buffers meanwhile.
+ 		let session: SessionLike;
+ 		let sessionFile: string | undefined;
++		let sessionId: string | undefined;
+ 		try {
+-			({ session, sessionFile } = await createSession({
++			({ session, sessionFile, sessionId } = await createSession({
+ 				name: spec.name,
+ 				systemPrompt: spec.systemPrompt,
+ 				spawnedBy: spawnerName,
+ 				model: resolved.model,
+ 				thinkingLevel,
++				...(tools ? { tools } : {}),
++				...(toolGuard ? { toolGuard } : {}),
+ 			}));
+ 		} catch (e) {
+ 			if (engine.get(spec.name) === reservation) engine.release(spec.name);
+@@ -389,14 +446,16 @@
+ 			// Persisted to roster.json so a restart can rebuild this agent.
+ 			systemPrompt: spec.systemPrompt,
+ 			sessionFile,
++			sessionId,
++			policyMeta,
+ 		});
+ 
+ 		// 4) Deliver the optional first message atomically (no race; the agent is registered).
+ 		let sent = "";
+-		if (spec.message) {
++		if (message) {
+ 			// Captured before delivery so the wait can see a reaction that already happened.
+ 			const sinceEvent = engine.events.length;
+-			const outcome = await engine.route(spawnerName, spec.name, spec.message);
++			const outcome = await engine.route(spawnerName, spec.name, message);
+ 			if (outcome.outcome === "delivered") {
+ 				// Same bounded observation as send_message: the spawner learns whether the new agent
+ 				// actually started on its task, without waiting for it to finish.
+diff -ruN a/extensions/actor-subagents/spawn-policy.test.ts b/extensions/actor-subagents/spawn-policy.test.ts
+--- a/extensions/actor-subagents/spawn-policy.test.ts
++++ b/extensions/actor-subagents/spawn-policy.test.ts
+@@ -0,0 +1,210 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import type { RoutedAgentMessage } from "./agent-message.ts";
++import type { AgentEvent } from "./agent-event.ts";
++import { type Caller, installApi, type PolicyResult, type SpawnArgs, type SpawnPolicy } from "./api.ts";
++import { Engine } from "./engine.ts";
++import { createSpawner, type SessionLike, type ThinkingLevel } from "./spawner.ts";
++
++/** The smallest session the spawner can wire; records what it was handed. */
++function fakeSession(): SessionLike & { delivered: RoutedAgentMessage[] } {
++	const delivered: RoutedAgentMessage[] = [];
++	const listeners: ((e: { type: string }) => void)[] = [];
++	let level: ThinkingLevel = "high";
++	return {
++		delivered,
++		// Picks the message up like a live session, so the spawner's reaction wait ends at once.
++		sendAgentMessage: async (m) => {
++			delivered.push(m);
++			setTimeout(() => {
++				for (const l of listeners) l({ type: "turn_start" });
++			}, 0);
++		},
++		sendUserMessage: async () => {},
++		abort: async () => {},
++		abortBash: () => {},
++		shutdown: async () => {},
++		dispose: () => {},
++		get thinkingLevel() {
++			return level;
++		},
++		setModel: async () => {},
++		setThinkingLevel: (l) => {
++			level = l;
++		},
++		subscribe: (l) => {
++			listeners.push(l);
++			return () => {};
++		},
++		getToolDefinition: () => undefined,
++		messages: [],
++		getContextUsage: () => undefined,
++	} as Partial<SessionLike> as SessionLike & { delivered: RoutedAgentMessage[] };
++}
++
++type CreateSpec = Parameters<Parameters<typeof createSpawner>[0]["createSession"]>[0];
++
++function setup(policy?: SpawnPolicy, extra: Partial<Parameters<typeof createSpawner>[0]> = {}) {
++	const engine = new Engine({ maxAgents: 8, maxSpawnDepth: 3 });
++	engine.addAgent({
++		name: "main",
++		model: "fg/main",
++		thinkingLevel: "xhigh",
++		sessionId: "sess-main",
++		handle: { deliver: async () => {}, abort: async () => {} },
++		spawnedBy: "main",
++		depth: 0,
++		createdAt: 0,
++		turns: 0,
++		lastActivity: 0,
++	});
++	const specs: CreateSpec[] = [];
++	const sessions = new Map<string, ReturnType<typeof fakeSession>>();
++	const calls: { args: SpawnArgs; caller: Caller }[] = [];
++	const spawner = createSpawner({
++		engine,
++		resolveModel: (ref) => {
++			if (!ref) return undefined;
++			const [provider, id] = ref.split("/");
++			return { provider: provider ?? "", id: id ?? "", model: { ref } };
++		},
++		createSession: async (spec) => {
++			specs.push(spec);
++			const s = fakeSession();
++			s.setThinkingLevel(spec.thinkingLevel ?? "off");
++			sessions.set(spec.name, s);
++			return { session: s, sessionFile: `/x/${spec.name}.jsonl`, sessionId: `sess-${spec.name}` };
++		},
++		spawnPolicy: policy
++			? () => async (args, caller) => {
++					calls.push({ args, caller });
++					return policy(args, caller);
++				}
++			: undefined,
++		cwd: () => "/repo",
++		...extra,
++	});
++	return { engine, spawner, specs, sessions, calls };
++}
++
++const textOf = (m: RoutedAgentMessage | undefined) => m?.parts[0]?.content;
++
++test("a policy reject fails the spawn with its reason, flagged as rejected, and frees the name", async () => {
++	const { engine, spawner, specs } = setup(() => ({ reject: "card missing acceptance" }));
++	const r = await spawner.spawnAgent({ name: "w", systemPrompt: "p", message: "go" }, "main");
++	assert.equal(r.ok, false);
++	assert.equal(r.rejected, true);
++	assert.match(r.msg, /card missing acceptance/);
++	assert.equal(engine.has("w"), false);
++	assert.equal(specs.length, 0);
++});
++
++test("a throwing policy fails the spawn instead of the tool call", async () => {
++	const { engine, spawner } = setup(() => {
++		throw new Error("router broke");
++	});
++	const r = await spawner.spawnAgent({ name: "w", systemPrompt: "p", message: "go" }, "main");
++	assert.equal(r.ok, false);
++	assert.equal(r.rejected, true);
++	assert.match(r.msg, /spawn policy failed: router broke/);
++	assert.equal(engine.has("w"), false);
++});
++
++test("the policy sees the spawn args (with task) and the caller", async () => {
++	const { spawner, calls } = setup(() => ({ model: "a/b", thinkingLevel: "low" }));
++	await spawner.spawnAgent(
++		{ name: "w", systemPrompt: "p", message: "go", model: "x/y", thinkingLevel: "max", task: { kind: "scout" } },
++		"main",
++	);
++	assert.deepEqual(calls[0]?.args, {
++		name: "w",
++		systemPrompt: "p",
++		message: "go",
++		model: "x/y",
++		thinkingLevel: "max",
++		task: { kind: "scout" },
++	});
++	assert.deepEqual(calls[0]?.caller, {
++		name: "main",
++		sessionId: "sess-main",
++		model: "fg/main",
++		thinkingLevel: "xhigh",
++		policyMeta: undefined,
++		cwd: "/repo",
++	});
++});
++
++test("the policy's model, effort, briefAppend and tools are applied to the child", async () => {
++	const { engine, spawner, specs, sessions } = setup(() => ({
++		model: "anthropic/sonnet",
++		thinkingLevel: "medium",
++		briefAppend: "Report in 5 lines.",
++		tools: ["read", "send_message"],
++	}));
++	const r = await spawner.spawnAgent({ name: "w", systemPrompt: "p", message: "do it", model: "x/y" }, "main");
++	assert.equal(r.ok, true);
++	assert.equal(engine.get("w")?.model, "anthropic/sonnet");
++	assert.equal(engine.get("w")?.thinkingLevel, "medium");
++	assert.deepEqual(specs[0]?.model, { ref: "anthropic/sonnet" });
++	assert.deepEqual(specs[0]?.tools, ["read", "send_message"]);
++	assert.equal(textOf(sessions.get("w")?.delivered[0]), "do it\n\nReport in 5 lines.");
++});
++
++test("meta is stored on the child and offered back as caller.policyMeta on a grandchild spawn", async () => {
++	let n = 0;
++	const policy = (): PolicyResult => ({ model: "a/b", thinkingLevel: "low", meta: { tier: `T${++n}` } });
++	const { engine, spawner, calls } = setup(policy);
++	await spawner.spawnAgent({ name: "child", systemPrompt: "p", message: "go" }, "main");
++	await spawner.spawnAgent({ name: "grand", systemPrompt: "p", message: "go" }, "child");
++	assert.deepEqual(engine.get("child")?.policyMeta, { tier: "T1" });
++	assert.equal(calls[1]?.caller.name, "child");
++	assert.equal(calls[1]?.caller.sessionId, "sess-child");
++	assert.deepEqual(calls[1]?.caller.policyMeta, { tier: "T1" });
++});
++
++test("without a policy the spawn inherits exactly as upstream", async () => {
++	const { engine, spawner, specs, sessions } = setup();
++	const r = await spawner.spawnAgent({ name: "w", systemPrompt: "p", message: "go" }, "main");
++	assert.equal(r.ok, true);
++	assert.equal(r.rejected, undefined);
++	assert.equal(engine.get("w")?.model, "fg/main");
++	assert.equal(engine.get("w")?.thinkingLevel, "xhigh");
++	assert.equal(specs[0]?.tools, undefined);
++	assert.equal(textOf(sessions.get("w")?.delivered[0]), "go");
++	assert.equal(engine.get("w")?.sessionId, "sess-w");
++});
++
++test("api subscribers get one spawn event per child, carrying its session id", async () => {
++	const { engine, spawner } = setup();
++	const api = installApi({ engine, retune: async () => {} }, {});
++	const seen: AgentEvent[] = [];
++	api.subscribe((e) => {
++		if (e.type === "spawn") seen.push(e);
++	});
++	await spawner.spawnAgent({ name: "w", systemPrompt: "p", message: "go" }, "main");
++	engine.addAgent({ ...engine.get("w")!, name: "restored", sessionId: "sess-r" });
++	assert.deepEqual(
++		seen.map(({ ts: _ts, ...e }) => e),
++		[
++			{ type: "spawn", name: "w", by: "main", parent: "main", childSessionId: "sess-w" },
++			{ type: "spawn", name: "restored", by: "main", parent: "main", childSessionId: "sess-r" },
++		],
++	);
++});
++
++test("child session events reach onSessionEvent with the child's name (error-notice gate)", async () => {
++	const seen: [string, string][] = [];
++	const { spawner } = setup(undefined, { onSessionEvent: (name, ev) => void seen.push([name, ev.type]) });
++	await spawner.spawnAgent({ name: "w", systemPrompt: "p", message: "go" }, "main");
++	assert.deepEqual(seen, [["w", "turn_start"]]);
++});
++
++test("the policy's toolGuard is handed to the child session, and absent without one", async () => {
++	const toolGuard = () => "no";
++	const { specs, spawner } = setup(() => ({ model: "a/b", thinkingLevel: "low", toolGuard }));
++	await spawner.spawnAgent({ name: "w", systemPrompt: "p", message: "go" }, "main");
++	assert.equal(specs[0]?.toolGuard, toolGuard);
++	const plain = setup(() => ({ model: "a/b", thinkingLevel: "low" }));
++	await plain.spawner.spawnAgent({ name: "w", systemPrompt: "p", message: "go" }, "main");
++	assert.equal("toolGuard" in (plain.specs[0] ?? {}), false);
++});
+diff -ruN a/extensions/actor-subagents/spawn-wording.test.ts b/extensions/actor-subagents/spawn-wording.test.ts
+--- a/extensions/actor-subagents/spawn-wording.test.ts
++++ b/extensions/actor-subagents/spawn-wording.test.ts
+@@ -0,0 +1,29 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import * as fs from "node:fs";
++import { agentSystemPrompt } from "./agent-system-prompt.ts";
++import { SPAWN_MODEL_HINT, SPAWN_TASK_HINT, SPAWN_THINKING_HINT } from "./spawn-wording.ts";
++
++// agent-tools.ts imports pi's peer dependency, which the headless suite lacks, so its schema is
++// checked as source text; the wording itself lives in spawn-wording.ts and is checked as values.
++const toolsSource = fs.readFileSync(new URL("./agent-tools.ts", import.meta.url), "utf8");
++const inTools = (re: RegExp) => assert.ok(re.test(toolsSource), `agent-tools.ts should match ${re}`);
++
++test("both model hints leave the choice to the spawn policy instead of urging inheritance", () => {
++	const prompt = agentSystemPrompt("w", "p", "main");
++	for (const text of [SPAWN_MODEL_HINT, SPAWN_THINKING_HINT, prompt]) {
++		assert.match(text, /spawn policy decide \(inherit if none\)/);
++		assert.doesNotMatch(text, /almost always correct/);
++		assert.doesNotMatch(text, /inherit yours/);
++	}
++});
++
++test("spawn_subagent takes an optional task object and uses the shared hints", () => {
++	inTools(/task: Type\.Optional\(\s*Type\.Object\(/);
++	inTools(/description: SPAWN_MODEL_HINT/);
++	inTools(/description: SPAWN_THINKING_HINT/);
++	inTools(/description: SPAWN_TASK_HINT/);
++	inTools(/task: args\.task/);
++	assert.ok(!/almost always correct/.test(toolsSource), "agent-tools.ts still urges inheritance");
++	assert.match(SPAWN_TASK_HINT, /spawn policy/);
++});
+diff -ruN a/extensions/actor-subagents/spawn-wording.ts b/extensions/actor-subagents/spawn-wording.ts
+--- a/extensions/actor-subagents/spawn-wording.ts
++++ b/extensions/actor-subagents/spawn-wording.ts
+@@ -0,0 +1,15 @@
++/**
++ * The spawn_subagent parameter hints, kept out of agent-tools.ts (which needs pi's peer
++ * dependency) so the headless suite can pin them. agent-system-prompt.ts states the same rule
++ * at boot time; change them together.
++ *
++ * Neutral on purpose: a registered spawn policy (api.ts) picks model and effort, so urging the
++ * agent to inherit would contradict it; with no policy, omitting still means inherit.
++ */
++export const SPAWN_MODEL_HINT =
++	"Omit to let the spawn policy decide (inherit if none). Set 'provider/id' only when the user " +
++	"explicitly named a specific model; an unknown value reports available models when any are listed.";
++export const SPAWN_THINKING_HINT =
++	"often described as <model>@<thinking level>. Omit to let the spawn policy decide (inherit if none).";
++export const SPAWN_TASK_HINT =
++	"Optional structured task card for the spawn policy (ignored when none is registered).";
+diff -ruN a/extensions/actor-subagents/tool-guard.test.ts b/extensions/actor-subagents/tool-guard.test.ts
+--- a/extensions/actor-subagents/tool-guard.test.ts
++++ b/extensions/actor-subagents/tool-guard.test.ts
+@@ -0,0 +1,41 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { childToolAllowlist, toolGuardExtensions } from "./tool-guard.ts";
++
++/** Loads the inline extensions into a stand-in pi and returns the tool_call handlers they registered. */
++function load(entries: ReturnType<typeof toolGuardExtensions>) {
++	const handlers: ((event: { toolName: string; input: unknown }) => unknown)[] = [];
++	const pi = { on: (event: string, h: (typeof handlers)[number]) => void (event === "tool_call" && handlers.push(h)) };
++	for (const e of entries) e.factory(pi as never);
++	return handlers;
++}
++
++test("a guard reason blocks the tool call with that reason", () => {
++	const seen: unknown[] = [];
++	const [handler] = load(
++		toolGuardExtensions((name, input) => {
++			seen.push([name, input]);
++			return name === "write" ? "scouts are read-only" : undefined;
++		}),
++	);
++	assert.deepEqual(handler?.({ toolName: "write", input: { path: "x" } }), { block: true, reason: "scouts are read-only" });
++	assert.deepEqual(seen, [["write", { path: "x" }]]);
++});
++
++test("a guard that returns undefined lets the call through", () => {
++	const [handler] = load(toolGuardExtensions(() => undefined));
++	assert.equal(handler?.({ toolName: "read", input: {} }), undefined);
++});
++
++test("no guard registers no handler", () => {
++	assert.deepEqual(toolGuardExtensions(undefined), []);
++	assert.equal(load(toolGuardExtensions(undefined)).length, 0);
++});
++
++test("a policy allowlist of ['read'] still leaves the child its orchestration tools", () => {
++	const orchestration = [{ name: "spawn_subagent" }, { name: "send_message" }, { name: "list_subagents" }];
++	const tools = childToolAllowlist(["read"], orchestration);
++	assert.deepEqual(tools, ["read", "spawn_subagent", "send_message", "list_subagents"]);
++	assert.ok(tools?.includes("send_message"));
++	assert.equal(childToolAllowlist(undefined, orchestration), undefined);
++});
+diff -ruN a/extensions/actor-subagents/tool-guard.ts b/extensions/actor-subagents/tool-guard.ts
+--- a/extensions/actor-subagents/tool-guard.ts
++++ b/extensions/actor-subagents/tool-guard.ts
+@@ -0,0 +1,24 @@
++/** The spawn policy's per-child tool guard as an inline child extension (index.ts loads it). */
++export type ToolGuard = (toolName: string, input: unknown) => string | undefined;
++
++type PiLike = { on(event: "tool_call", h: (e: { toolName: string; input: unknown }) => unknown): void };
++
++/** No guard, no extension: an unguarded child gets no tool_call handler at all. */
++export function toolGuardExtensions(guard: ToolGuard | undefined): { name: string; factory: (pi: PiLike) => void }[] {
++	if (!guard) return [];
++	const factory = (pi: PiLike) =>
++		pi.on("tool_call", (e) => {
++			const reason = guard(e.toolName, e.input);
++			return reason === undefined ? undefined : { block: true, reason };
++		});
++	return [{ name: "subagent-tool-guard", factory }];
++}
++
++/**
++ * The tool allowlist a child session is created with. pi's `tools` option filters every tool,
++ * custom ones included, so the policy's list (built-ins + extension tools) is widened by the
++ * orchestration tools actor-subagents hands the child; without them it could not report back.
++ */
++export function childToolAllowlist(policyTools: string[] | undefined, orchestration: { name: string }[]): string[] | undefined {
++	return policyTools ? [...new Set([...policyTools, ...orchestration.map((t) => t.name)])] : undefined;
++}
+diff -ruN a/extensions/actor-subagents/usage-line.test.ts b/extensions/actor-subagents/usage-line.test.ts
+--- a/extensions/actor-subagents/usage-line.test.ts
++++ b/extensions/actor-subagents/usage-line.test.ts
+@@ -0,0 +1,42 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import type { AgentRecord } from "./agent-record.ts";
++import { agentStatus } from "./agent-status.ts";
++import { formatSnapshot } from "./feed.ts";
++
++const now = 10_000_000;
++const rec = (over: Partial<AgentRecord>): AgentRecord => ({
++	name: "w",
++	model: "anthropic/x",
++	handle: { deliver: async () => {}, abort: async () => {} },
++	spawnedBy: "main",
++	depth: 1,
++	createdAt: 0,
++	turns: 3,
++	lastActivity: now - 4 * 60_000,
++	...over,
++});
++const view = (lastRequestAgoMs: number, tokens: number | null, cost: number) => ({
++	getMessages: () => [{ role: "assistant", timestamp: now - lastRequestAgoMs, usage: { cost: { total: cost } } }],
++	getContextUsage: () => ({ tokens, contextWindow: 200_000, percent: 70 }),
++	subscribe: () => () => {},
++});
++const line = (r: AgentRecord) =>
++	formatSnapshot([{ agent: r, depth: 1 }], "main", agentStatus, now).split("\n")[1] ?? "";
++
++test("list_subagents shows idle time, cache warmth, context size and cost", () => {
++	const out = line(rec({ view: view(4 * 60_000, 143_000, 2.1) }));
++	assert.match(out, /idle=4m cache=warm\(1m left\) ctx=143k \$2\.10$/);
++});
++
++test("the cache reads cold once the 5-minute TTL has passed", () => {
++	assert.match(line(rec({ view: view(6 * 60_000, 900, 0) })), /idle=4m cache=cold ctx=900 \$0\.00$/);
++});
++
++test("a running agent shows no idle time, and missing data is left out", () => {
++	const out = line(rec({ activity: "thinking", view: view(10_000, null, 0.5) }));
++	assert.doesNotMatch(out, /idle=/);
++	assert.match(out, /cache=warm\(4m left\) \$0\.50$/);
++	assert.doesNotMatch(out, /ctx=/);
++	assert.doesNotMatch(line(rec({})), /cache=|\$/);
++});

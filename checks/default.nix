@@ -13,6 +13,22 @@
     then acc // s
     else throw "checks: duplicate check names: ${toString dup}") {};
 
+  # The npm dependencies of the extension checks (typescript, @types/node, pi's packages).
+  npm = import ./npm {inherit lib pkgs;};
+  actorSubagents = self.packages.${pkgs.stdenv.hostPlatform.system}.actor-subagents;
+  # The patched source without upstream's tsconfig.json: tsc refuses files named on its command
+  # line next to one (TS5112), and the type check's flags are its own. package.json keeps the
+  # files ESM ("type": "module").
+  actorSubagentsTs = pkgs.runCommand "actor-subagents-ts" {} ''
+    mkdir $out
+    cp -r ${actorSubagents}/extensions ${actorSubagents}/package.json $out/
+  '';
+  # `tsc --strict` over one package, with the toolchain of the npm lock.
+  typecheck = import ./typecheck {
+    inherit lib pkgs;
+    inherit (npm) nodeModules;
+  };
+
   # One Home Manager evaluation, shared by the option-table check.
   hm = home-manager.lib.homeManagerConfiguration {
     inherit pkgs;
@@ -81,6 +97,22 @@
       # The web-search extension's tests, offline with an injected transport and resolver.
       web-search = import ./web-search {inherit pkgs lib;};
     }
+    {
+      # The npm lock installs the toolchain its package.json declares.
+      npm-deps = npm.check;
+      # The type check's runner accepts a clean fixture and rejects the broken ones.
+      typecheck-harness = typecheck.selftest;
+      # The upstream suite of the patched pi-actor-subagents, and the patches' markers.
+      actor-subagents = pkgs.callPackage ./actor-subagents {
+        src = actorSubagents;
+        inherit (npm) nodeModules;
+      };
+      # The patched source under `tsc --strict`.
+      typecheck-actor-subagents = typecheck.typecheck {
+        name = "actor-subagents";
+        src = actorSubagentsTs;
+      };
+    }
     # The committed rendered paths against the render fixture's output.
     (import ./render.nix {inherit pkgs lib self render;})
     # The pi module and the economics bridge against fixture users (rows per option group).
@@ -88,6 +120,7 @@
       inherit pkgs lib home-manager;
       inputs = self.inputs;
       piWeb = ../packages/pi-web;
+      actorPackage = actorSubagents;
     })
   ];
 in

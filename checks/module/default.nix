@@ -6,6 +6,8 @@
   inputs,
   home-manager,
   piWeb,
+  # The flake's `packages.<system>.actor-subagents`, which the actor's package default must equal.
+  actorPackage,
 }: let
   piLib = import ./lib.nix {inherit pkgs lib inputs home-manager piWeb;};
   inherit (piLib) mkAssertionCheck piFixtureWith piEvalFails;
@@ -21,6 +23,7 @@ in {
   search-local = import ./search-local.nix {inherit lib pkgs piLib;};
   search-local-run = import ./search-local-run.nix {inherit lib pkgs piLib;};
   web = import ./web.nix {inherit lib piLib;};
+  actor-subagents-module = import ./actor-subagents.nix {inherit lib inputs piLib actorPackage;};
 
   fixtures = mkAssertionCheck "pi-setup-fixtures" [
     {

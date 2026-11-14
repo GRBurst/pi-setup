@@ -47,7 +47,7 @@
       };
       forChildren = lib.mkOption {
         type = lib.types.bool;
-        description = "Whether background child agents load the extension (read by the economics module).";
+        description = "Whether background child agents load the extension: the actor-subagents settings file's `childExtensions` (with the economics bridge, the economics module's list).";
       };
       description = lib.mkOption {
         type = lib.types.str;

@@ -28,6 +28,12 @@
       url = "github:fdietze/pi-claude-auth/941e6d54ab06fe204dd2a702e902965f9e649358";
       flake = false;
     };
+    # Upstream of the patched actor-subagents (`programs.pi.actorSubagents`); the patches under
+    # patches/pi-actor-subagents apply to exactly this revision.
+    pi-actor-subagents = {
+      url = "github:fdietze/pi-actor-subagents/e92099a7272e64105d5ab429d7856dc0f473b4e3";
+      flake = false;
+    };
   };
 
   outputs = {
@@ -38,6 +44,7 @@
     pi-question,
     pi-session-name,
     pi-claude-auth,
+    pi-actor-subagents,
   }: let
     systems = ["x86_64-linux" "aarch64-linux"];
     forSystems = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
@@ -49,7 +56,7 @@
       };
   in {
     homeModules.default = import ./modules/home-manager/flake-module.nix {
-      inherit pi-question pi-session-name pi-claude-auth;
+      inherit pi-question pi-session-name pi-claude-auth pi-actor-subagents;
       piWeb = ./packages/pi-web;
       aiSandbox = ai-sandbox.homeModules.default;
     };
@@ -59,6 +66,8 @@
 
     packages = forSystems (_: pkgs: {
       pi-web = pkgs.callPackage ./packages/pi-web {};
+      # The patched pi-actor-subagents (`programs.pi.actorSubagents.package`'s default).
+      actor-subagents = pkgs.callPackage ./packages/actor-subagents/package.nix {src = pi-actor-subagents;};
     });
 
     # The render tree, exposed so it can be built and inspected on its own.

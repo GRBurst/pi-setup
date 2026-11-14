@@ -60,6 +60,23 @@
         "type": "github"
       }
     },
+    "pi-actor-subagents": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793073635,
+        "narHash": "sha256-/NgrQvswfMIZRIl+FnWXmaEzt6Ipsyv5tjdiwFWZSbo=",
+        "owner": "fdietze",
+        "repo": "pi-actor-subagents",
+        "rev": "e92099a7272e64105d5ab429d7856dc0f473b4e3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "fdietze",
+        "repo": "pi-actor-subagents",
+        "rev": "e92099a7272e64105d5ab429d7856dc0f473b4e3",
+        "type": "github"
+      }
+    },
     "pi-claude-auth": {
       "flake": false,
       "locked": {
@@ -116,6 +133,7 @@
         "ai-sandbox": "ai-sandbox",
         "home-manager": "home-manager",
         "nixpkgs": "nixpkgs",
+        "pi-actor-subagents": "pi-actor-subagents",
         "pi-claude-auth": "pi-claude-auth",
         "pi-question": "pi-question",
         "pi-session-name": "pi-session-name"

@@ -74,6 +74,7 @@
       "~/.claude"
       caveat
       "Nix-only"
+      "programs.pi.actorSubagents"
     ];
     "Options" = ["no default" "programs.pi"];
     "Ports" = [(toString web.listenPort) (toString web.backendPort) listenAddress];

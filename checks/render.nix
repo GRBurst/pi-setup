@@ -22,4 +22,16 @@ in {
   # Also the dependency revisions: they are rendered from flake.lock, so a revision that
   # differs from the lock differs from the Nix output.
   render-package = mk "render-package" ["package.json"];
+
+  # A Nix-only extension never reaches the package: with the patched actor-subagents on in the
+  # render fixture, the manifest is F_P's.
+  render-nix-only = let
+    withActor = render.fpWith {programs.pi.actorSubagents.enable = true;};
+    same = render.manifestOf withActor == render.manifestOf render.fp;
+  in
+    pkgs.runCommand "render-nix-only" {} (
+      if withActor.programs.pi.extensions ? actor-subagents && same
+      then "touch $out"
+      else "echo 'render-nix-only: the actor-subagents entry changes the manifest' >&2; exit 1"
+    );
 }

@@ -3,7 +3,8 @@
 ## What this repository is
 
 The pi coding agent as a set of resources: pi extensions, the settings
-seed, the pi-web package and its helper scripts. It is a pi package (installable
+seed, the pi-web package and its helper scripts, and (Nix-only) a patched build of
+pi-actor-subagents. It is a pi package (installable
 without Nix with `pi install`) and a Home Manager module (`programs.pi`) for users
 of Nix. Nix is first-class: the module's extension registry is the source for the
 package manifest and the settings seed, so both routes ship the same resource set.
@@ -11,8 +12,9 @@ package manifest and the settings seed, so both routes ship the same resource se
 ## Boundaries
 
 - Inputs: `nixpkgs` and `home-manager` (for the checks), the sandbox repository
-  `ai-sandbox` (its Home Manager module and the isolation wrapper), and three
-  extension sources pinned to revisions. Consumers `follows` their own inputs.
+  `ai-sandbox` (its Home Manager module and the isolation wrapper), and four
+  extension sources pinned to revisions (one of them, `pi-actor-subagents`, built with
+  local patches). Consumers `follows` their own inputs.
 - The repository imports no private layer and names none: a module that needs
   more declares an option, and the layer above sets it. Other layers import this
   one; there is no back edge.
@@ -37,11 +39,15 @@ settings/seed.json                the settings seed (rendered)
 render/                           the render fixture and `nix run .#render`
 modules/home-manager/             the Home Manager module (pi options, extension registry)
 modules/home-manager/economics-bridge.nix  the economics bridge (a path output)
+modules/home-manager/actor-subagents.nix   the patched actor-subagents (`programs.pi.actorSubagents`, Nix-only)
 extensions/                       the extensions this repository carries (`static-working-indicator`, `web-search`)
 packages/pi-web/                  the pi-web package (Nix-only service)
+packages/actor-subagents/         the patched pi-actor-subagents build (`packages.<system>.actor-subagents`)
+patches/pi-actor-subagents/       its patches and the upstream's LICENSE (see NOTICE)
 examples/existing-flake/          the example flake for an existing Home Manager flake (README, `existing-flake-example`)
 scripts/                          the two helper scripts (kept byte-stable; covered by `agent-web-prune` and as `writeShellApplication`)
-checks/                           module/ (behaviour), render, package, leaks, meta checks, web-search/ (the extension's tests)
+checks/                           module/ (behaviour), render, package, leaks, meta checks, web-search/ (the extension's tests),
+                                  actor-subagents/ (the patched build's upstream suite), npm/ and typecheck/ (their toolchain)
 ```
 
 ## Resources and render
@@ -121,3 +127,14 @@ any other repository.
   same tests under `bun test` as well: the pi package this flake builds against runs on
   Node, the standalone pi binaries on Bun, and the two differ where the guard and the
   converter depend on them (`lookup`, proxies, zlib, string limits).
+- **AD19 Patched upstreams.** A patched upstream is carried as patch files with the
+  upstream's LICENSE beside them (`patches/<input>/`, listed in `NOTICE`), applied at build
+  time to the pinned input; the derivation keeps a stable name
+  (`pi-actor-subagents-patched`), so a consumer recognises the build by its store path. A patch
+  that no longer applies fails the build; the upstream suite runs on the patched source.
+- **AD20 The patched actor-subagents is Nix-only (AD8).** The render skips it (an explicit
+  Nix-only list, so enabling it in the render fixture never maps it); without Nix, an
+  extension that drives it finds no spawn-policy API (`globalThis.__subagentsApi_v1`) and
+  says so. Its settings file is the one place children's extensions are named
+  (`childExtensions`, from the registry's `forChildren`; with the economics bridge, the
+  economics module's list).

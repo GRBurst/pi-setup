@@ -1,9 +1,10 @@
 # The economics bridge (the pi-setup `homeModules.piEconomics`): hands pi's
 # extension registry and its settings file to the economics module (`programs.piEconomics`), which then renders the
 # links, the existence assertions, the children's list and the `piSettingsMigrate` activation
-# entry, and the local model's health URL to its task router. Declares nothing and imports
-# nothing: valid only next to a module that declares the `programs.piEconomics` options set
-# here (the private layer's entry imports both).
+# entry, and the local model's health URL to its task router; and takes that children's list back
+# for the actor-subagents settings file (the economics module renders the links then, its own
+# extensions included). Declares nothing and imports nothing: valid only next to a module that
+# declares the `programs.piEconomics` options set and read here (the private layer's entry imports both).
 {
   config,
   lib,
@@ -30,6 +31,8 @@ in {
         file = p.settings.stateFile;
         after = ["piSettingsSeed" "piSettingsReclaim"];
       };
+      # No cycle: the economics module's list is read from the registry, never from the settings file.
+      programs.pi.actorSubagents.childExtensions = config.programs.piEconomics.childExtensions;
     }
     (lib.mkIf (p.router.localHealthUrl != null) {
       programs.piEconomics.taskRouter.settings.models.qwen-local.health = p.router.localHealthUrl;

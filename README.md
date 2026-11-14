@@ -56,12 +56,14 @@ config dir (upstream honours `CLAUDE_CONFIG_DIR`; turning it on needs
 `pi-claude-login` once). The economics
 bridge `homeModules.piEconomics` is a module path: a layer that declares
 `programs.piEconomics` imports it, and it forwards `programs.pi`'s extension
-registry, settings file and local health URL to `programs.piEconomics`.
+registry, settings file and local health URL to `programs.piEconomics`, and takes
+that module's children list back for the actor-subagents settings file.
 
 The Nix side has the same `claude-auth` caveat as the package: unless
 `claudeAuth.setConfigDir` is on, token refresh inside the sandbox needs write access to
 `~/.claude`, which you should never grant (see the caveat under Without Nix). With
-`setConfigDir`, pi uses its own Claude dir instead.
+`setConfigDir`, pi uses its own Claude dir instead; without it, you can turn the
+extension off with `programs.pi.claudeAuth.enable = false`.
 
 ## Without Nix
 
@@ -117,6 +119,9 @@ Nix-only (no `pi install` equivalent): the sandbox (`programs.aiSandbox`), the p
 service (`programs.pi.web`), the local SearXNG (`programs.pi.search.local`), the
 economics bridge (`homeModules.piEconomics`), the
 `claude-auth` config dir (`claudeAuth.setConfigDir`) and the `pi-claude-login` helper,
+the patched actor-subagents (`programs.pi.actorSubagents`: a build of the upstream extension
+with the patches under `patches/pi-actor-subagents`; without it, an extension that needs its
+`globalThis.__subagentsApi_v1` finds none and says so),
 and the settings link, seed and reclaim that `settings.manage` controls. The sandbox
 itself does not need Nix: without Nix, install ai-sandbox with its own installer
 (`scripts/install.sh install`); its `pi` profile runs this package.
@@ -127,9 +132,13 @@ itself does not need Nix: without Nix, install ai-sandbox with its own installer
   (key `pi-setup#homeModules.default`). Importing it alone is enough.
 - `homeModules.piEconomics`: the economics bridge, a module path. A module that
   declares `programs.piEconomics` imports it; it forwards the extension registry,
-  the settings file and the task-router settings to that module.
+  the settings file and the task-router settings to that module, and sets
+  `programs.pi.actorSubagents`' children list from that module's.
 - `packages.<system>.pi-web`: the pi-web web UI package; the service is
   `programs.pi.web` (Nix-only).
+- `packages.<system>.actor-subagents`: the patched pi-actor-subagents
+  (`pi-actor-subagents-patched`, `passthru.spawnPolicyApi = 2`), the default of
+  `programs.pi.actorSubagents.package` (Nix-only).
 - `apps.<system>.render`: `nix run .#render` writes `package.json` and
   `settings/seed.json` into the checkout.
 - `legacyPackages.<system>.render-tree`: the rendered tree, built on its own.
@@ -137,13 +146,15 @@ itself does not need Nix: without Nix, install ai-sandbox with its own installer
   `settings`, `claude-auth`, `extensions`, `search`, `search-local`,
   `search-local-run`, `web`, `fixtures`,
   `shellcheck`, `actionlint`, `doc-refs`, `boundary`, `agent-web-prune`,
-  `render-seed`, `render-package`, `pi-package-manifest`, `pi-install-smoke`,
-  `readme-sections`, `existing-flake-example`, `web-search`.
+  `render-seed`, `render-package`, `render-nix-only`, `pi-package-manifest`, `pi-install-smoke`,
+  `readme-sections`, `existing-flake-example`, `web-search`, `actor-subagents`
+  (the upstream suite of the patched build), `typecheck-actor-subagents`,
+  `actor-subagents-module`, `npm-deps`, `typecheck-harness`.
 - `formatter.<system>`: Alejandra.
 
 Inputs: `nixpkgs`, `home-manager` (both followed by consumers),
-`ai-sandbox`, and the extension sources `pi-question`, `pi-session-name` and
-`pi-claude-auth` (pinned by revision in the URL, `flake = false`).
+`ai-sandbox`, and the extension sources `pi-question`, `pi-session-name`,
+`pi-claude-auth` and `pi-actor-subagents` (pinned by revision in the URL, `flake = false`).
 The `ai-sandbox` input is `github:GRBurst/ai-sandbox`.
 
 ## Options
@@ -154,6 +165,9 @@ no default. `extensions.<name>.*` describes one registry entry.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
+| `actorSubagents.enable` | `false` | The patched pi-actor-subagents (Nix-only): background agents spawned and supervised from a pi session, and the `globalThis.__subagentsApi_v1` other extensions drive. Registry entry `actor-subagents`, withheld from children. |
+| `actorSubagents.package` | this repository's `actor-subagents` | The patched source (`packages.<system>.actor-subagents`: the upstream input with the patches under `patches/pi-actor-subagents`). `passthru.spawnPolicyApi` is the API version it provides (1: the spawn policy; 2: also `spawn`/`kill`, child tools and cwd). |
+| `actorSubagents.settings` | `{ }` | Merged into `<agentDir>/actor-subagents/settings.json` (`maxAgents`, `maxSpawnDepth`, `errorNoticeGraceMs`). `childExtensions` there is always the registry's (the link paths of the `forChildren` entries; with the economics bridge, the economics module's list); setting it here is an assertion error. |
 | `agentDir` | `".pi/agent"` | pi's agent dir, relative to the home directory (`PI_CODING_AGENT_DIR`). |
 | `builtinExtensions.question.enable` | `true` | Link the `question` extension: a question tool in a bottom dock, withheld from children. |
 | `builtinExtensions.sessionName.enable` | `true` | Link the `session-name` extension: names the session so the tab title, selector and footer show what is worked on. |
@@ -168,7 +182,7 @@ no default. `extensions.<name>.*` describes one registry entry.
 | `enable` | `false` | The pi coding agent: its settings file, extensions and services, inside the sandbox. |
 | `extensions.<name>.checkPath` | the entry's `path` | What the existence assertion probes; set it when `path` is a derivation, so the check needs no build. |
 | `extensions.<name>.description` | — | What the extension does. |
-| `extensions.<name>.forChildren` | — | Whether background child agents load the extension (read by the economics bridge). |
+| `extensions.<name>.forChildren` | — | Whether background child agents load the extension: the actor-subagents settings file's `childExtensions` (with the economics bridge, the economics module's list). |
 | `extensions.<name>.input` | `null` | Where the extension comes from; the existence assertion names it. |
 | `extensions.<name>.path` | — | The extension's directory, which `<agentDir>/extensions/<name>` links to. |
 | `linkExtensions` | `true` | Link the registry and assert its entries exist. The economics bridge sets it to `false` and forwards the registry. |
@@ -351,4 +365,6 @@ Run one at a time, each capped (see `AGENTS.md`):
 
 ## Licence
 
-MIT, see `LICENSE`.
+MIT, see `LICENSE`. The patches under `patches/pi-actor-subagents` are derived from
+that upstream and distributed under its licence, kept next to them as
+`patches/pi-actor-subagents/LICENSE`; see `NOTICE`.

@@ -1,6 +1,6 @@
 # The extension registry `programs.pi.extensions`, the built-ins and the economics bridge:
 # the pi module alone links its registry under <agentDir>/extensions and asserts every entry exists; the bridge hands the registry to the economics module's (`programs.piEconomics`) instead,
-# here against a stub of the four `programs.piEconomics` options it sets. Wired by ./default.nix as
+# here against a stub of the `programs.piEconomics` options it sets and reads. Wired by ./default.nix as
 # pi-setup-extensions.
 {
   lib,

@@ -196,15 +196,37 @@ in
           session-name = false;
         }
         && pe.piSettings.file == bridged.programs.pi.settings.stateFile
-        && pe.piSettings.after == ["piSettingsSeed" "piSettingsReclaim"]
-        && pe.taskRouter.settings == {};
+        && pe.piSettings.after == ["piSettingsSeed" "piSettingsReclaim"];
       message = "extensions: the bridge turns linking off and forwards the registry field by field, the state file and piSettings.after";
+    }
+    {
+      # The agent dir: the economics module's links and its settings entries (relative to the agent dir)
+      # land where pi reads them, a moved agent dir included.
+      condition =
+        bridged.programs.piEconomics.agentDir
+        == ".pi/agent"
+        && (piFixtureWith {
+          imports = [bridge stub own];
+          programs.pi.agentDir = "custom/agent";
+        }).programs.piEconomics.agentDir
+        == "custom/agent";
+      message = "extensions: the bridge forwards programs.pi.agentDir, a moved one included";
+    }
+    {
+      # The economics module takes the agent dir without a trailing slash; pi's option allows one.
+      condition =
+        (piFixtureWith {
+          imports = [bridge stub own];
+          programs.pi.agentDir = "x/y/";
+        }).programs.piEconomics.agentDir
+        == "x/y";
+      message = "extensions: the bridge forwards programs.pi.agentDir without a trailing slash";
     }
     {
       condition = let
         pe = bridgedOff.programs.piEconomics;
       in
-        pe.extensions == {} && pe.piSettings.file == "unset" && pe.piSettings.after == [];
+        pe.extensions == {} && pe.agentDir == "unset" && pe.piSettings.file == "unset" && pe.piSettings.after == [];
       message = "extensions: the bridge sets nothing while programs.pi is off";
     }
     {

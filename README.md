@@ -56,7 +56,7 @@ config dir (upstream honours `CLAUDE_CONFIG_DIR`; turning it on needs
 `pi-claude-login` once). The economics
 bridge `homeModules.piEconomics` is a module path: a layer that declares
 `programs.piEconomics` imports it, and it forwards `programs.pi`'s extension
-registry, settings file and local health URL to `programs.piEconomics`, and takes
+registry, agent dir and settings file to `programs.piEconomics`, and takes
 that module's children list back for the actor-subagents settings file.
 
 The Nix side has the same `claude-auth` caveat as the package: unless
@@ -132,7 +132,7 @@ itself does not need Nix: without Nix, install ai-sandbox with its own installer
   (key `pi-setup#homeModules.default`). Importing it alone is enough.
 - `homeModules.piEconomics`: the economics bridge, a module path. A module that
   declares `programs.piEconomics` imports it; it forwards the extension registry,
-  the settings file and the task-router settings to that module, and sets
+  the agent dir and the settings file to that module, and sets
   `programs.pi.actorSubagents`' children list from that module's.
 - `packages.<system>.pi-web`: the pi-web web UI package; the service is
   `programs.pi.web` (Nix-only).
@@ -168,7 +168,7 @@ no default. `extensions.<name>.*` describes one registry entry.
 | `actorSubagents.enable` | `false` | The patched pi-actor-subagents (Nix-only): background agents spawned and supervised from a pi session, and the `globalThis.__subagentsApi_v1` other extensions drive. Registry entry `actor-subagents`, withheld from children. |
 | `actorSubagents.package` | this repository's `actor-subagents` | The patched source (`packages.<system>.actor-subagents`: the upstream input with the patches under `patches/pi-actor-subagents`). `passthru.spawnPolicyApi` is the API version it provides (1: the spawn policy; 2: also `spawn`/`kill`, child tools and cwd). |
 | `actorSubagents.settings` | `{ }` | Merged into `<agentDir>/actor-subagents/settings.json` (`maxAgents`, `maxSpawnDepth`, `errorNoticeGraceMs`). `childExtensions` there is always the registry's (the link paths of the `forChildren` entries; with the economics bridge, the economics module's list); setting it here is an assertion error. |
-| `agentDir` | `".pi/agent"` | pi's agent dir, relative to the home directory (`PI_CODING_AGENT_DIR`). |
+| `agentDir` | `".pi/agent"` | pi's agent dir, relative to the home directory (`PI_CODING_AGENT_DIR`). The economics bridge forwards it. |
 | `builtinExtensions.question.enable` | `true` | Link the `question` extension: a question tool in a bottom dock, withheld from children. |
 | `builtinExtensions.sessionName.enable` | `true` | Link the `session-name` extension: names the session so the tab title, selector and footer show what is worked on. |
 | `builtinExtensions.staticWorkingIndicator.enable` | `false` | Link `static-working-indicator`, which replaces pi's animated working spinner with a static glyph (no timer, no repaint of the transcript). |
@@ -187,7 +187,7 @@ no default. `extensions.<name>.*` describes one registry entry.
 | `extensions.<name>.path` | — | The extension's directory, which `<agentDir>/extensions/<name>` links to. |
 | `linkExtensions` | `true` | Link the registry and assert its entries exist. The economics bridge sets it to `false` and forwards the registry. |
 | `package` | `null` | The pi package, installed when non-null (a consumer may install pi itself). |
-| `router.localHealthUrl` | `null` | Health URL of the local model's server, set as the task router's `qwen-local` health by the economics bridge; `null` leaves the router settings alone. |
+| `router.localHealthUrl` | `null` | Health URL of the local model's server, for a task router module that reads it (its local model's health); nothing in this repository reads it, the economics bridge does not forward it. `null`: unset. |
 | `search.local.enable` | `false` | An on-demand SearXNG on `127.0.0.1` without NixOS or systemd: `pi-searx-up`, `pi-searx-down`, and the `pi` aliases (`pi`, `pi_nono`, variants) starting it first through ai-sandbox's `preStart` hook (see Local search without NixOS). Sets `search.searxUrl` (mkDefault) to `http://127.0.0.1:<port>`. |
 | `search.local.package` | `pkgs.searxng` | The SearXNG package; its main program serves the rendered settings. |
 | `search.local.port` | `8888` | Loopback port. Whatever already answers `/healthz` there is reused instead of started (logged as such) and left alone by `pi-searx-down`; see `reuseExisting`. |

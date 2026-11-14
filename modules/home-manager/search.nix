@@ -1,7 +1,7 @@
 # The two leaves a host fills from facts this module cannot know: the address
 # of the search backend for the built-in web-search extension (./extensions.nix), which reads
-# `PI_SEARX_URL`, and the health URL of the local model the task router prefers (read by
-# ./economics-bridge.nix).
+# `PI_SEARX_URL`, and the health URL of the local model's server, declared here for a task
+# router module to read (nothing in this repository reads it).
 {
   config,
   lib,
@@ -26,9 +26,9 @@
       default = null;
       example = "http://localhost:11545";
       description = ''
-        The health URL of the local model's server, set as
-        `taskRouter.settings.models.qwen-local.health` by the economics bridge. null: the
-        task router's settings are left alone.
+        The health URL of the local model's server. Declared for a task router module, which
+        reads it as the health URL of its local model; this module and the economics bridge
+        only carry it. null: unset.
       '';
     };
   };

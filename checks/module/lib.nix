@@ -24,7 +24,7 @@
 
   # The four `programs.piEconomics` options the bridge sets and the one it reads (`childExtensions`,
   # the economics module's children list), loosely typed: a field the bridge does not forward is
-  # absent here, not defaulted.
+  # absent here, not defaulted, so a bridge definition of any other option is an evaluation error.
   piEconomicsStub = {
     options.programs.piEconomics = {
       childExtensions = lib.mkOption {
@@ -35,6 +35,10 @@
         type = with lib.types; attrsOf (attrsOf anything);
         default = {};
       };
+      agentDir = lib.mkOption {
+        type = lib.types.str;
+        default = "unset";
+      };
       piSettings.file = lib.mkOption {
         type = lib.types.str;
         default = "unset";
@@ -42,10 +46,6 @@
       piSettings.after = lib.mkOption {
         type = with lib.types; listOf str;
         default = [];
-      };
-      taskRouter.settings = lib.mkOption {
-        type = with lib.types; attrsOf anything;
-        default = {};
       };
     };
   };

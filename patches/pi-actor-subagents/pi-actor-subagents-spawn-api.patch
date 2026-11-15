@@ -12,7 +12,7 @@ index 45c3c53..d716cbc 100644
  	 * Phase of the running turn (reasoning vs answer text vs tool run); undefined means no
  	 * turn is running. Single field for "is it working" AND "at what": a separate streaming
 diff --git a/extensions/actor-subagents/agent-tools.ts b/extensions/actor-subagents/agent-tools.ts
-index 2c5b25b..c6e4d99 100644
+index 41cb25e..3b2a8d6 100644
 --- a/extensions/actor-subagents/agent-tools.ts
 +++ b/extensions/actor-subagents/agent-tools.ts
 @@ -211,7 +211,11 @@ export function makeAgentTools(
@@ -168,7 +168,7 @@ index 30d0281..61f98f7 100644
  	if (isStrictDescendant(agents, name, authorityOf(by))) return { ok: true };
  	return { ok: false, reason: `'${name}' is not in your subtree` };
 diff --git a/extensions/actor-subagents/child-prompt.test.ts b/extensions/actor-subagents/child-prompt.test.ts
-index dee050e..759a77d 100644
+index f5f9f79..07619f1 100644
 --- a/extensions/actor-subagents/child-prompt.test.ts
 +++ b/extensions/actor-subagents/child-prompt.test.ts
 @@ -20,3 +20,10 @@ test("childPromptOptions keeps discovered append prompts and adds the agent prea
@@ -177,32 +177,32 @@ index dee050e..759a77d 100644
  });
 +
 +test("a quiet child (api.spawn with quiet) gets the caller's prompt without the agent preamble", () => {
-+	// The preamble's handshake waits for a go-ahead and ends turns with send_message; a quiet child is driven by the API alone
++	// The preamble's backbrief waits for a go-ahead and ends turns with send_message; a quiet child is driven by the API alone
 +	// (no agent may message it), so no go-ahead would ever come.
 +	const { appendSystemPromptOverride } = childPromptOptions("ovs", "Audit.", "main", true);
 +	assert.deepEqual(appendSystemPromptOverride(["FROM APPEND_SYSTEM.md"]), ["FROM APPEND_SYSTEM.md", "Audit."]);
 +});
 diff --git a/extensions/actor-subagents/child-prompt.ts b/extensions/actor-subagents/child-prompt.ts
-index ab1f1f9..89e157f 100644
+index a860fe3..c02432c 100644
 --- a/extensions/actor-subagents/child-prompt.ts
 +++ b/extensions/actor-subagents/child-prompt.ts
-@@ -5,6 +5,10 @@
-  * systemPromptOverride makes pi drop its default preamble together with the tools and rules
-  * sections, and the rules section is where extensions' promptGuidelines land: a child would get
-  * a policy-granted extension's tools without the guidance on when to use them.
+@@ -7,6 +7,10 @@
+  * guidelines sections, and the guidelines section is where extensions' promptGuidelines land: a
+  * child granted an extension through `childExtensions` would get its tools without the guidance
+  * on when to use them. Project context and skills follow the addendum in pi's layout either way.
 + *
 + * Local patch (spawn-api): a quiet child (api.spawn with quiet) gets the caller's prompt
-+ * alone. The preamble's handshake waits for a go-ahead and ends every turn with send_message; the
++ * alone. The preamble's backbrief waits for a go-ahead and ends every turn with send_message; the
 + * API drives a quiet child and no agent may message it, so that go-ahead would never come.
   */
  import { agentSystemPrompt } from "./agent-system-prompt.ts";
  
-@@ -12,8 +16,9 @@ export function childPromptOptions(
+@@ -18,8 +22,9 @@ export function childPromptOptions(
  	name: string,
  	systemPrompt: string,
  	spawnedBy: string,
 +	quiet = false,
- ): { appendSystemPromptOverride: (base: string[]) => string[] } {
+ ): ChildPromptOptions {
  	return {
 -		appendSystemPromptOverride: (base) => [...base, agentSystemPrompt(name, systemPrompt, spawnedBy)],
 +		appendSystemPromptOverride: (base) => [...base, quiet ? systemPrompt : agentSystemPrompt(name, systemPrompt, spawnedBy)],
@@ -485,10 +485,10 @@ index 68cb056..344fb65 100644
  
  	/** Tell the parents what a lifecycle change did to their children (lifecycle-notice.ts decides). */
 diff --git a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/index.ts
-index 69fbfaa..18afd89 100644
+index 70d0646..11f87aa 100644
 --- a/extensions/actor-subagents/index.ts
 +++ b/extensions/actor-subagents/index.ts
-@@ -27,7 +27,7 @@ import { renderAgentMessage } from "./agent-message-renderer.ts";
+@@ -29,7 +29,7 @@ import { renderAgentMessage } from "./agent-message-renderer.ts";
  import { orderAgents } from "./agent-order.ts";
  import { childPromptOptions } from "./child-prompt.ts";
  import { makeAgentTools } from "./agent-tools.ts";
@@ -497,7 +497,7 @@ index 69fbfaa..18afd89 100644
  import type { AgentHandle } from "./agent-record.ts";
  import type { EngineResumeResult } from "./control-result.ts";
  import { authorityOf } from "./authorize.ts";
-@@ -55,6 +55,8 @@ import {
+@@ -57,6 +57,8 @@ import {
    sessionSpecFromRoster,
  } from "./persistence-logic.ts";
  import { readRoster, subagentsDir, writeRoster } from "./persistence.ts";
@@ -506,7 +506,7 @@ index 69fbfaa..18afd89 100644
  import {
    resolveExplicitModelRef,
    resolveModelRef,
-@@ -414,6 +416,8 @@ export default function subagents(pi: ExtensionAPI) {
+@@ -435,6 +437,8 @@ export default function subagents(pi: ExtensionAPI) {
    };
    type ModelLike = { provider: string; id: string };
    let cwd = process.cwd();
@@ -515,7 +515,7 @@ index 69fbfaa..18afd89 100644
    let foregroundModel: ModelLike | undefined; // current foreground model (for inheritance to agents)
    let foregroundThinkingLevel: ThinkingLevel | undefined;
    // "provider/id" of the models this session is scoped to (empty = no scoping configured).
-@@ -535,8 +539,13 @@ export default function subagents(pi: ExtensionAPI) {
+@@ -556,8 +560,13 @@ export default function subagents(pi: ExtensionAPI) {
        thinkingLevel?: ThinkingLevel;
        tools?: string[];
        toolGuard?: ToolGuard;
@@ -529,7 +529,7 @@ index 69fbfaa..18afd89 100644
    ): Promise<{ session: SessionLike; sessionFile?: string; sessionId?: string }> => {
      // Children get the human's settings as VALUES, through a manager whose writes go nowhere.
      // pi's session.setModel()/setThinkingLevel() persist the new default into settings.json, so
-@@ -568,7 +577,7 @@ export default function subagents(pi: ExtensionAPI) {
+@@ -589,7 +598,7 @@ export default function subagents(pi: ExtensionAPI) {
          { name: "subagent-retry-signals", factory: forwardRetrySignals(spec.name) },
          ...toolGuardExtensions(spec.toolGuard),
        ],
@@ -538,7 +538,7 @@ index 69fbfaa..18afd89 100644
      });
      await loader.reload();
      // Project settings ride along as overrides (the in-memory manager only seeds the global
-@@ -601,7 +610,7 @@ export default function subagents(pi: ExtensionAPI) {
+@@ -622,7 +631,7 @@ export default function subagents(pi: ExtensionAPI) {
      // foreground toolset, plus the custom agent tools via customTools -- unless the spawn
      // policy restricted it (the orchestration tools always stay; see childToolAllowlist).
      const modelRuntime = await modelRuntimeReady;
@@ -547,7 +547,7 @@ index 69fbfaa..18afd89 100644
      const tools = childToolAllowlist(spec.tools, customTools);
      const { session } = await createAgentSession({
        ...(tools ? { tools } : {}),
-@@ -722,6 +731,8 @@ export default function subagents(pi: ExtensionAPI) {
+@@ -743,6 +752,8 @@ export default function subagents(pi: ExtensionAPI) {
        const result = await setAgentModel("main", { name, ...t });
        if (!result.ok) throw new Error(result.msg);
      },
@@ -556,7 +556,7 @@ index 69fbfaa..18afd89 100644
    });
  
    // Overwrite roster.json with current background membership (called after spawn/kill).
-@@ -729,7 +740,7 @@ export default function subagents(pi: ExtensionAPI) {
+@@ -750,7 +761,7 @@ export default function subagents(pi: ExtensionAPI) {
    const persistRoster = (): void => {
      if (!subDir) return;
      try {
@@ -567,7 +567,7 @@ index 69fbfaa..18afd89 100644
      }
 diff --git a/extensions/actor-subagents/quiet-control.test.ts b/extensions/actor-subagents/quiet-control.test.ts
 new file mode 100644
-index 0000000..b5bb034
+index 0000000..429a29a
 --- /dev/null
 +++ b/extensions/actor-subagents/quiet-control.test.ts
 @@ -0,0 +1,141 @@
@@ -869,7 +869,7 @@ index 0000000..21e161b
 +	assert.equal("kill" in api, false);
 +});
 diff --git a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/spawner.ts
-index b0ab9ce..3867a90 100644
+index b0ab9ce..77dc853 100644
 --- a/extensions/actor-subagents/spawner.ts
 +++ b/extensions/actor-subagents/spawner.ts
 @@ -5,7 +5,7 @@

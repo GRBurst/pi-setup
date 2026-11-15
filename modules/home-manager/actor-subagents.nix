@@ -1,5 +1,5 @@
 # The patched pi-actor-subagents (`programs.pi.actorSubagents`): background agents spawned and
-# supervised from a pi session. The upstream extension with three local patches
+# supervised from a pi session. The upstream extension with two local patches
 # (../../packages/actor-subagents/package.nix), which add the stable `globalThis.__subagentsApi_v1`
 # other extensions drive. Linked through the registry; not loaded into children. Its settings file
 # <agentDir>/actor-subagents/settings.json is the one place children's extensions are named

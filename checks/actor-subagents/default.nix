@@ -23,9 +23,9 @@ pkgs.runCommand "pi-actor-subagents-tests" {nativeBuildInputs = [pkgs.nodejs];} 
   find . -name '*.test.ts' ! -name agent-tools.test.ts ! -name panel.test.ts ! -name 'pi-*.test.ts' -print0 \
     | xargs -0 node --test --experimental-strip-types
 
-  # The child-prompt patch's own test must be part of what ran, and index.ts must build the
-  # child prompt through it rather than through a full override, which is what drops pi's tool
-  # and rules sections.
+  # Upstream's child-prompt test must be part of what ran, and index.ts must build the child
+  # prompt through childPromptOptions (an append prompt) rather than through a full override,
+  # which is what drops pi's tools and guidelines sections.
   grep -q 'childPromptOptions' child-prompt.test.ts
   grep -q 'childPromptOptions(' index.ts
   if grep -q 'systemPromptOverride:' index.ts; then
@@ -63,7 +63,7 @@ pkgs.runCommand "pi-actor-subagents-tests" {nativeBuildInputs = [pkgs.nodejs];} 
   # A quiet agent answers only to the API and the user; send_message asks the engine first.
   grep -qF 'engine.quietRefusal(selfName, t)' agent-tools.ts
   grep -qF 'd.engine.kill(API_ACTOR, names)' api.ts
-  # A quiet child runs without the agent preamble (its handshake waits for a go-ahead no one sends).
+  # A quiet child runs without the agent preamble (its backbrief waits for a go-ahead no one sends).
   grep -qF 'childPromptOptions(spec.name, spec.systemPrompt, spec.spawnedBy, spec.quiet === true)' index.ts
   grep -q 'spawnApiDeps({ engine, spawnAgent' index.ts
   grep -q 'cwd = cwdOf(spec)' index.ts

@@ -29,7 +29,7 @@ diff -ruN a/extensions/actor-subagents/agent-record.ts b/extensions/actor-subage
 diff -ruN a/extensions/actor-subagents/agent-system-prompt.ts b/extensions/actor-subagents/agent-system-prompt.ts
 --- a/extensions/actor-subagents/agent-system-prompt.ts
 +++ b/extensions/actor-subagents/agent-system-prompt.ts
-@@ -16,7 +16,7 @@
+@@ -21,7 +21,7 @@
      `You are agent "${name}" in a multi-agent system.`,
      `You were spawned by "${spawnedBy}".`,
      "You can talk to other agents with these tools:",
@@ -844,7 +844,7 @@ diff -ruN a/extensions/actor-subagents/feed.ts b/extensions/actor-subagents/feed
 diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/index.ts
 --- a/extensions/actor-subagents/index.ts
 +++ b/extensions/actor-subagents/index.ts
-@@ -27,10 +27,12 @@
+@@ -29,10 +29,12 @@
  import { orderAgents } from "./agent-order.ts";
  import { childPromptOptions } from "./child-prompt.ts";
  import { makeAgentTools } from "./agent-tools.ts";
@@ -857,7 +857,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
  import {
    formatControlResult,
    formatResumeResult,
-@@ -58,7 +60,12 @@
+@@ -61,7 +63,12 @@
    unknownModelMessage,
  } from "./resolve-model.ts";
  import { createAgentModelSetter } from "./set-agent-model.ts";
@@ -871,7 +871,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
  import {
    createSpawner,
    type ResolvedModel,
-@@ -66,6 +73,7 @@
+@@ -69,6 +76,7 @@
  } from "./spawner.ts";
  import type { ThinkingLevel } from "./thinking-level.ts";
  import { timestampToolResult } from "./tool-timestamp.ts";
@@ -879,7 +879,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
  
  /**
   * Gives one session a sense of elapsed time by stamping the wall-clock start and finish times
-@@ -90,6 +98,7 @@
+@@ -93,6 +101,7 @@
    });
  }
  
@@ -887,7 +887,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
  /**
   * Read this extension's settings, next to pi's own agent config (getAgentDir() honors pi's
   * agent-dir override, so a test or alternate profile stays self-contained).
-@@ -97,13 +106,33 @@
+@@ -100,13 +109,33 @@
   * means per field (defaults for caps, nothing for childExtensions).
   */
  function readSettings(): Settings {
@@ -923,7 +923,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
  
  // Fired to each mid-turn-paused agent on resume to re-trigger its work. Fixed text
  // (not main-authored) so resume stays a single tool call from main's side.
-@@ -170,7 +199,11 @@
+@@ -173,7 +202,11 @@
  //      append/busy). A v26 instance would treat a string flag as foreign and lack these methods.
  // v28: terminal errors route actionable scheduler messages instead of silent notices; v27
  //      would retain the old announce/route methods after /reload and never wake a parent.
@@ -936,7 +936,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
  
  function getEngine(): Engine {
    const g = globalThis as Record<string, unknown>;
-@@ -457,8 +490,22 @@
+@@ -482,8 +515,22 @@
      }
    };
  
@@ -960,7 +960,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
    installProcessHooks(unsubscribeEngine);
  
    // Policy lives in resolve-model.ts (pure); this only binds it to the live registry.
-@@ -482,9 +529,11 @@
+@@ -507,9 +554,11 @@
        spawnedBy: string;
        model: unknown;
        thinkingLevel?: ThinkingLevel;
@@ -973,7 +973,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
      // Children get the human's settings as VALUES, through a manager whose writes go nowhere.
      // pi's session.setModel()/setThinkingLevel() persist the new default into settings.json, so
      // a file-backed child manager would let a retuned subagent silently change what the next
-@@ -512,6 +561,8 @@
+@@ -537,6 +586,8 @@
        additionalExtensionPaths: settings.childExtensions,
        extensionFactories: [
          { name: "subagent-timestamps", factory: registerToolTimestamps },
@@ -982,7 +982,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
        ],
        ...childPromptOptions(spec.name, spec.systemPrompt, spec.spawnedBy),
      });
-@@ -543,16 +594,20 @@
+@@ -568,16 +619,20 @@
      }
  
      // Leave the built-in tool allowlist unset so the agent inherits the full default
@@ -1005,7 +1005,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
        resourceLoader: loader,
        sessionManager: sm,
        settingsManager: childSettings,
-@@ -612,7 +667,11 @@
+@@ -637,7 +692,11 @@
        getContextUsage: () => session.getContextUsage(),
        getExtensionStatuses: () => extensionStatuses,
      };
@@ -1018,7 +1018,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
    };
  
    // Models offered for retuning and named in "unknown model" errors: the session's scoped
-@@ -629,6 +688,9 @@
+@@ -654,6 +713,9 @@
      createSession,
      onActivity: updateStatus,
      listAvailableModels: listModels,
@@ -1028,7 +1028,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
    });
  
    // Retuning a running agent (the set_subagent_model tool and the panel's model/effort keys).
-@@ -649,6 +711,15 @@
+@@ -674,6 +736,15 @@
      persistRoster: () => persistRoster(),
    });
  
@@ -1044,7 +1044,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
    // Overwrite roster.json with current background membership (called after spawn/kill).
    // Best-effort: persistence must never break the swarm.
    const persistRoster = (): void => {
-@@ -692,7 +763,7 @@
+@@ -717,7 +788,7 @@
        // Placed before the session is built, so its preamble names the adopting parent too.
        const placement = restoredPlacement(entry.spawnedBy, engine.get(entry.spawnedBy)?.depth);
        try {
@@ -1053,7 +1053,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
            sessionSpecFromRoster({ ...entry, ...placement }, resolved.model),
            entry.sessionFile,
          );
-@@ -702,6 +773,7 @@
+@@ -727,6 +798,7 @@
            model: `${resolved.provider}/${resolved.id}`,
            systemPrompt: entry.systemPrompt,
            sessionFile: sessionFile ?? entry.sessionFile,
@@ -1061,7 +1061,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
            session,
            pausedMidTurn:
              deriveStatus(session.messages as RawMessage[]) === "pausedMidTurn",
-@@ -804,13 +876,18 @@
+@@ -829,13 +901,18 @@
        (s) => `${s.model.provider}/${s.model.id}`,
      );
      // Locate this main session's subagents dir (persistence + restore are keyed by it).
@@ -1080,7 +1080,7 @@ diff -ruN a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/ind
      if (!engine.has("main")) {
        const mainHandle: AgentHandle = {
          // via the globalThis indirection so the singleton handle never uses a stale pi.
-@@ -827,6 +904,7 @@
+@@ -852,6 +929,7 @@
            ? `${foregroundModel.provider}/${foregroundModel.id}`
            : "(foreground)",
          thinkingLevel: foregroundThinkingLevel,
@@ -1149,7 +1149,7 @@ diff -ruN a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/s
  
  export type { ThinkingLevel } from "./thinking-level.ts";
  
-@@ -79,6 +81,8 @@
+@@ -89,6 +91,8 @@
  	thinkingLevel?: ThinkingLevel;
  	/** Optional first message: delivered atomically to the new agent right after spawn. */
  	message?: string;
@@ -1158,7 +1158,7 @@ diff -ruN a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/s
  }
  
  export interface SpawnerDeps {
-@@ -99,9 +103,18 @@
+@@ -109,9 +113,18 @@
  		spawnedBy: string;
  		model: unknown;
  		thinkingLevel?: ThinkingLevel;
@@ -1178,7 +1178,7 @@ diff -ruN a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/s
  }
  
  /** Metadata to re-register an agent from a rehydrated (disk-loaded) session on restart. */
-@@ -112,13 +125,15 @@
+@@ -122,13 +135,15 @@
  	model: string; // "provider/id" display string
  	systemPrompt: string;
  	sessionFile: string;
@@ -1195,7 +1195,7 @@ diff -ruN a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/s
  	/** Re-register an agent from a restored session (used by restart resume). */
  	restoreAgent: (spec: RestoreSpec) => void;
  }
-@@ -222,6 +237,7 @@
+@@ -247,6 +262,7 @@
  				engine.setStopReason(name, stopReason, outcome?.errorMessage);
  				engine.flushNotices(name);
  			}
@@ -1203,7 +1203,7 @@ diff -ruN a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/s
  			onActivity?.();
  		});
  	};
-@@ -322,6 +338,7 @@
+@@ -347,6 +363,7 @@
  			reconfigure,
  			systemPrompt: spec.systemPrompt,
  			sessionFile: spec.sessionFile,
@@ -1211,7 +1211,7 @@ diff -ruN a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/s
  			spawnedBy: spec.spawnedBy,
  			depth: spec.depth,
  			createdAt: Date.now(),
-@@ -331,11 +348,11 @@
+@@ -356,11 +373,11 @@
  		});
  	};
  
@@ -1226,7 +1226,7 @@ diff -ruN a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/s
  
  		// 1) Reserve the name synchronously (atomic: duplicate/cap/depth) — closes races.
  		const reserved = engine.reserve(spec.name, spawnerName);
-@@ -343,22 +360,62 @@
+@@ -368,22 +385,62 @@
  		// Identity, not just the name, distinguishes this reservation from a later re-spawn.
  		const reservation = engine.get(spec.name);
  
@@ -1291,7 +1291,7 @@ diff -ruN a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/s
  			}));
  		} catch (e) {
  			if (engine.get(spec.name) === reservation) engine.release(spec.name);
-@@ -389,14 +446,16 @@
+@@ -414,14 +471,16 @@
  			// Persisted to roster.json so a restart can rebuild this agent.
  			systemPrompt: spec.systemPrompt,
  			sessionFile,

@@ -31,7 +31,7 @@
     # Upstream of the patched actor-subagents (`programs.pi.actorSubagents`); the patches under
     # patches/pi-actor-subagents apply to exactly this revision.
     pi-actor-subagents = {
-      url = "github:fdietze/pi-actor-subagents/e92099a7272e64105d5ab429d7856dc0f473b4e3";
+      url = "github:fdietze/pi-actor-subagents/7ace3f2afd195bd47650da6437742868913c8682";
       flake = false;
     };
   };

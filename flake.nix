@@ -16,7 +16,7 @@
     # Supply chain: extension code runs with pi's privileges inside the sandbox;
     # pinned by rev, never bumped blind.
     pi-question = {
-      url = "github:fdietze/pi-question/1f5e8cdf9f2f7cb197181ef53b4bc64ee42e1a76";
+      url = "github:fdietze/pi-question/983cb2cd6566cf33a65b3d11f06529d886ae51e7";
       flake = false;
     };
     pi-session-name = {

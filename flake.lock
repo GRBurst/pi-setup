@@ -97,17 +97,17 @@
     "pi-question": {
       "flake": false,
       "locked": {
-        "lastModified": 1793071990,
-        "narHash": "sha256-BqDsEtoz4GJsI8NG9D/TH1gOPmJydta6q4QB7DT2p8U=",
+        "lastModified": 1794680217,
+        "narHash": "sha256-7KWULCNQ3EkFJBHNdrc4zG/rEitkGJ2bHtY1LQiHqJU=",
         "owner": "fdietze",
         "repo": "pi-question",
-        "rev": "1f5e8cdf9f2f7cb197181ef53b4bc64ee42e1a76",
+        "rev": "983cb2cd6566cf33a65b3d11f06529d886ae51e7",
         "type": "github"
       },
       "original": {
         "owner": "fdietze",
         "repo": "pi-question",
-        "rev": "1f5e8cdf9f2f7cb197181ef53b4bc64ee42e1a76",
+        "rev": "983cb2cd6566cf33a65b3d11f06529d886ae51e7",
         "type": "github"
       }
     },

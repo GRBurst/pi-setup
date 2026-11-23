@@ -188,6 +188,7 @@ no default. `extensions.<name>.*` describes one registry entry.
 | `linkExtensions` | `true` | Link the registry and assert its entries exist. The economics bridge sets it to `false` and forwards the registry. |
 | `package` | `null` | The pi package, installed when non-null (a consumer may install pi itself). |
 | `router.localHealthUrl` | `null` | Health URL of the local model's server, for a task router module that reads it (its local model's health); nothing in this repository reads it, the economics bridge does not forward it. `null`: unset. |
+| `search.fetchProxy` | `null` | The HTTP proxy the built-in `web_fetch` goes through, exported as `PI_WEB_FETCH_PROXY`: `"env"` uses the proxy variables pi starts with (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`), an `http://[user:password@]host:port` URL is used for every target. `null`: no variable, direct connections. See Web search. |
 | `search.local.enable` | `false` | An on-demand SearXNG on `127.0.0.1` without NixOS or systemd: `pi-searx-up`, `pi-searx-down`, and the `pi` aliases (`pi`, `pi_nono`, variants) starting it first through ai-sandbox's `preStart` hook (see Local search without NixOS). Sets `search.searxUrl` (mkDefault) to `http://127.0.0.1:<port>`. |
 | `search.local.package` | `pkgs.searxng` | The SearXNG package; its main program serves the rendered settings. |
 | `search.local.port` | `8888` | Loopback port. Whatever already answers `/healthz` there is reused instead of started (logged as such) and left alone by `pi-searx-down`; see `reuseExisting`. |
@@ -255,7 +256,22 @@ are asked through the runtime's `fetch`, which may honour those variables. Resul
 titles, snippets and URLs are reduced to one line without control characters.
 
 `web_fetch` contacts the target sites directly from this machine, without a proxy, so
-they see its address. It refuses:
+they see its address, unless `PI_WEB_FETCH_PROXY` (`search.fetchProxy`) is set, for a
+machine whose only way out is an HTTP proxy:
+
+| `PI_WEB_FETCH_PROXY` | Connection |
+| --- | --- |
+| unset or empty | direct; `HTTP_PROXY` and the like are ignored |
+| `env` | `https_proxy`/`HTTPS_PROXY` for `https` targets, `http_proxy`/`HTTP_PROXY` for `http`, either falling back to `all_proxy`/`ALL_PROXY`; a target in `no_proxy`/`NO_PROXY` (names, `.domain` suffixes, `*`, optional `:port`) or without a proxy variable goes direct |
+| `http://[user:password@]host[:port]` | that proxy for every target, `NO_PROXY` ignored |
+
+Through a proxy, every target, `http` and `https`, goes through a `CONNECT` tunnel to the
+address `web_fetch` checked (the first IPv4 one, else the first), never to the host name,
+so the proxy cannot resolve the name to another address; TLS runs end to end inside the
+tunnel and verifies the certificate for the host name. The proxy itself may be on a
+private address; it sees every target address, and a proxy that refuses `CONNECT` to
+port 80 cannot fetch `http` pages. An invalid value (not `http://`, or with a path) fails
+every call instead of going direct. It refuses:
 
 - every scheme but `http` and `https`, and URLs with `user:password@`;
 - `localhost`, `*.localhost` and the cloud metadata names, and every loopback, private

@@ -9,7 +9,9 @@
 // web_fetch downloads one public page and converts it to markdown locally;
 // no reader service sees the URL. It refuses non-http(s) URLs and local,
 // private and internal addresses at every redirect hop and pins the
-// connection to the checked address.
+// connection to the checked address. With PI_WEB_FETCH_PROXY set (`env` or
+// an http:// proxy URL) it goes through that proxy, tunnelling to the
+// checked address (./proxy.ts).
 //
 // This file is the only one that imports pi or typebox; the modules next to
 // it are plain Node, so the `web-search` check runs them without pi. No UI
@@ -18,13 +20,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { searchDescription, selectBackend } from "./config.ts";
-import { webFetch } from "./fetch.ts";
+import { createNodeTransport, webFetch } from "./fetch.ts";
+import { createProxyTransport, selectFetchProxy } from "./proxy.ts";
 import { runSearch } from "./search.ts";
 
 const ANNOTATIONS = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
 
 export default function (pi: ExtensionAPI) {
   const backend = selectBackend(process.env);
+  const transport = createProxyTransport(selectFetchProxy(process.env), createNodeTransport());
 
   pi.registerTool({
     name: "web_search",
@@ -57,7 +61,7 @@ export default function (pi: ExtensionAPI) {
     }),
     annotations: ANNOTATIONS,
     async execute(_toolCallId, params, signal) {
-      const r = await webFetch(params.url, { signal });
+      const r = await webFetch(params.url, { signal, transport });
       return { content: [{ type: "text", text: r.text }], details: r.details };
     },
   });

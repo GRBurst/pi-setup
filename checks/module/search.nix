@@ -1,5 +1,6 @@
-# The two leaves the consumer sets from facts the pi module cannot know:
-# `search.searxUrl` becomes `PI_SEARX_URL` when non-null, `router.localHealthUrl` is only
+# The leaves the consumer sets from facts the pi module cannot know:
+# `search.searxUrl` becomes `PI_SEARX_URL` and `search.fetchProxy` `PI_WEB_FETCH_PROXY`
+# when non-null, `router.localHealthUrl` is only
 # carried for a task router module: the economics bridge (here against a stub of the
 # `programs.piEconomics` options) does not forward it. Wired by ./default.nix as
 # pi-setup-search.
@@ -11,9 +12,11 @@
 
   alone = piFixtureWith {};
   withUrl = piFixtureWith {programs.pi.search.searxUrl = "http://127.0.0.1:9999";};
+  withProxy = piFixtureWith {programs.pi.search.fetchProxy = "env";};
   piOff = piFixtureWith {
     programs.pi.enable = false;
     programs.pi.search.searxUrl = "http://127.0.0.1:9999";
+    programs.pi.search.fetchProxy = "env";
   };
 
   # The web-search built-in reads PI_SEARX_URL and never sets it.
@@ -47,8 +50,19 @@ in
       message = "search: an explicit null is the default (no other variable is touched)";
     }
     {
+      condition = alone.programs.pi.search.fetchProxy == null && !(alone.home.sessionVariables ? PI_WEB_FETCH_PROXY);
+      message = "search: with fetchProxy = null (the default) no PI_WEB_FETCH_PROXY variable exists";
+    }
+    {
+      condition =
+        withProxy.home.sessionVariables.PI_WEB_FETCH_PROXY
+        == "env"
+        && removeAttrs withProxy.home.sessionVariables ["PI_WEB_FETCH_PROXY"] == alone.home.sessionVariables;
+      message = "search: a set fetchProxy is exported as PI_WEB_FETCH_PROXY, verbatim, and touches nothing else";
+    }
+    {
       # Like every leaf of the module: nothing while pi is off.
-      condition = !(piOff.home.sessionVariables ? PI_SEARX_URL);
+      condition = !(piOff.home.sessionVariables ? PI_SEARX_URL) && !(piOff.home.sessionVariables ? PI_WEB_FETCH_PROXY);
       message = "search: with programs.pi.enable = false searxUrl exports no PI_SEARX_URL";
     }
     {

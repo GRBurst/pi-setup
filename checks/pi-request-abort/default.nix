@@ -62,6 +62,18 @@ in
           miss "pi $version $t: control: the request did not reach the server"
           cat "$dir/pi.log" >&2
         fi
+
+        dir=runs/$version-$t-abort
+        run "$pi" "probe-$t/m" abort "$dir"
+        echo "pi $version $t abort: probe $(jq -c . "$dir/probe.jsonl" | tr '\n' ' ')server $(wc -l <"$dir/server.jsonl") request(s)"
+        if ! jq -se 'any(.[]; .aborted == true)' "$dir/probe.jsonl" >/dev/null; then
+          miss "pi $version $t: (i) ctx.signal did not abort"
+          cat "$dir/pi.log" >&2
+        fi
+        if [ -s "$dir/server.jsonl" ]; then
+          miss "pi $version $t: (ii) the aborted request reached the server"
+          cat "$dir/pi.log" >&2
+        fi
       done
     }
 

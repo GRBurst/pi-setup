@@ -225,10 +225,10 @@ index 0000000..657ed81
 +});
 diff --git a/extensions/actor-subagents/request-hooks.test.ts b/extensions/actor-subagents/request-hooks.test.ts
 new file mode 100644
-index 0000000..a6bd103
+index 0000000..2f83682
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.test.ts
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,280 @@
 +/** Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. */
 +import { test } from "node:test";
 +import assert from "node:assert/strict";
@@ -236,6 +236,7 @@ index 0000000..a6bd103
 +	DEFAULT_HOOK_TIMEOUT_MS,
 +	HeldRequests,
 +	holdRequest,
++	managedStops,
 +	MAX_TIMER_MS,
 +	type Clock,
 +	type RequestHooks,
@@ -450,12 +451,70 @@ index 0000000..a6bd103
 +	assert.equal(later.outcome, "aborted");
 +	assert.equal(h.calls.length, 0);
 +});
++
++/** held with its abortAll and close calls logged. */
++function loggedHeld(log: string[]) {
++	const held = new HeldRequests();
++	const abortAll = held.abortAll.bind(held);
++	const close = held.close.bind(held);
++	held.abortAll = () => {
++		log.push("abortAll");
++		abortAll();
++	};
++	held.close = () => {
++		log.push("close");
++		close();
++	};
++	return held;
++}
++
++test("managedStops: abort calls pi's abort, then aborts the held requests without awaiting it", async () => {
++	const log: string[] = [];
++	const held = loggedHeld(log);
++	const { controller } = held.hold();
++	let piAbort!: Promise<void>;
++	// pi's abort waits for idle, which a held request blocks: it settles only once the hold is released
++	const session = {
++		abort() {
++			log.push("session.abort");
++			piAbort = new Promise<void>((r) => controller.signal.addEventListener("abort", () => r(), { once: true }));
++			return piAbort;
++		},
++	};
++	const stops = managedStops(session, held, async () => {
++		log.push("body");
++	});
++	const p = stops.abort();
++	await settles(p);
++	assert.equal(p, piAbort);
++	assert.deepEqual(log, ["session.abort", "abortAll"]);
++});
++
++test("managedStops: shutdown closes the held requests before the shutdown body", async () => {
++	const log: string[] = [];
++	const held = loggedHeld(log);
++	const stops = managedStops({ abort: async () => {} }, held, async () => {
++		log.push("body");
++	});
++	await stops.shutdown();
++	assert.deepEqual(log, ["close", "abortAll", "body"]);
++	assert.equal(held.hold().controller.signal.aborted, true);
++});
++
++test("managedStops: a throwing shutdown body still leaves the held requests closed", async () => {
++	const held = new HeldRequests();
++	const stops = managedStops({ abort: async () => {} }, held, async () => {
++		throw new Error("body");
++	});
++	await assert.rejects(stops.shutdown(), /body/);
++	assert.equal(held.hold().controller.signal.aborted, true);
++});
 diff --git a/extensions/actor-subagents/request-hooks.ts b/extensions/actor-subagents/request-hooks.ts
 new file mode 100644
-index 0000000..c5e99fe
+index 0000000..6fc7997
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.ts
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,95 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. SDK-free: pi's objects
 + * are reached through minimal local shapes, so pi's type drift between releases cannot reach this file.
@@ -527,4 +586,27 @@ index 0000000..c5e99fe
 +		outer?.removeEventListener("abort", onOuter);
 +		release();
 +	}
++}
++
++/**
++ * The managed session's stops. Pause and kill: pi's abort first, then the held requests, WITHOUT awaiting pi's abort
++ * in between (`session.abort()` waits for idle, which a held hook blocks). Shutdown: close first, so a request held
++ * later is aborted at once.
++ */
++export function managedStops(
++	session: { abort(): Promise<void> },
++	held: HeldRequests,
++	shutdown: () => Promise<void>,
++): { abort(): Promise<void>; shutdown(): Promise<void> } {
++	return {
++		abort: () => {
++			const p = session.abort();
++			held.abortAll();
++			return p;
++		},
++		shutdown: async () => {
++			held.close();
++			await shutdown();
++		},
++	};
 +}

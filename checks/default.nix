@@ -112,6 +112,16 @@
         name = "actor-subagents";
         src = actorSubagentsTs;
       };
+      # pi does not send a request a provider hook holds when the turn stops meanwhile.
+      pi-request-abort = import ./pi-request-abort {
+        inherit pkgs lib;
+        pis = [
+          {
+            pi = pkgs.pi-coding-agent;
+            version = "1.4.0";
+          }
+        ];
+      };
     }
     # The committed rendered paths against the render fixture's output.
     (import ./render.nix {inherit pkgs lib self render;})

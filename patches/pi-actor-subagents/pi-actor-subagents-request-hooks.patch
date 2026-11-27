@@ -225,10 +225,10 @@ index 0000000..657ed81
 +});
 diff --git a/extensions/actor-subagents/request-hooks.test.ts b/extensions/actor-subagents/request-hooks.test.ts
 new file mode 100644
-index 0000000..04b6a19
+index 0000000..a6bd103
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.test.ts
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,221 @@
 +/** Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. */
 +import { test } from "node:test";
 +import assert from "node:assert/strict";
@@ -385,12 +385,77 @@ index 0000000..04b6a19
 +	assert.equal(c.timers.length, 1);
 +	assert.equal(c.timers[0].cancelled, true);
 +});
++
++/** p settles before the next macrotask, or the test fails with "did not settle". */
++const settles = <T>(p: Promise<T>) =>
++	Promise.race([p, new Promise<never>((_, reject) => setImmediate(() => reject(new Error("did not settle"))))]);
++const never: RequestHooks = { beforeRequest: () => new Promise(() => {}) };
++
++test("abortAll settles a never-settling hook: outcome aborted, timer cancelled", async () => {
++	const c = fakeClock();
++	const held = new HeldRequests();
++	const h = pendingHook();
++	const payload = { a: 1 };
++	const p = hold(payload, h.hooks, undefined, c, held);
++	await Promise.resolve();
++	held.abortAll();
++	const r = await settles(p);
++	assert.equal(r.outcome, "aborted");
++	assert.equal(r.payload, payload);
++	assert.equal(h.calls[0].signal.reason, "aborted");
++	assert.equal(c.timers[0].cancelled, true);
++});
++
++test("outer signal aborts: pi's own abort releases the hold", async () => {
++	const outer = new AbortController();
++	const h = pendingHook();
++	const p = hold({}, h.hooks, outer.signal);
++	await Promise.resolve();
++	outer.abort();
++	const r = await settles(p);
++	assert.equal(r.outcome, "aborted");
++	assert.equal(h.calls[0].signal.reason, "aborted");
++});
++
++test("an outer signal aborted already: the hook is not called", async () => {
++	const outer = new AbortController();
++	outer.abort();
++	const h = pendingHook();
++	const r = await settles(hold({}, h.hooks, outer.signal));
++	assert.equal(r.outcome, "aborted");
++	assert.equal(h.calls.length, 0);
++});
++
++test("no outer signal (a summary request): only the actor's stops or the timeout release it", async () => {
++	const held = new HeldRequests();
++	let settled = false;
++	const p = hold({}, never, undefined, fakeClock(), held).then((r) => {
++		settled = true;
++		return r;
++	});
++	await new Promise((r) => setImmediate(r));
++	assert.equal(settled, false);
++	held.abortAll();
++	assert.equal((await settles(p)).outcome, "aborted");
++});
++
++test("close aborts held and later holds", async () => {
++	const held = new HeldRequests();
++	const p = hold({}, never, undefined, fakeClock(), held);
++	await Promise.resolve();
++	held.close();
++	assert.equal((await settles(p)).outcome, "aborted");
++	const h = pendingHook();
++	const later = await settles(hold({}, h.hooks, undefined, fakeClock(), held));
++	assert.equal(later.outcome, "aborted");
++	assert.equal(h.calls.length, 0);
++});
 diff --git a/extensions/actor-subagents/request-hooks.ts b/extensions/actor-subagents/request-hooks.ts
 new file mode 100644
-index 0000000..4804f8c
+index 0000000..c5e99fe
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.ts
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,72 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. SDK-free: pi's objects
 + * are reached through minimal local shapes, so pi's type drift between releases cannot reach this file.
@@ -410,20 +475,30 @@ index 0000000..4804f8c
 +/** The child's held requests; the actor's own stops abort them. */
 +export class HeldRequests {
 +	private readonly live = new Set<AbortController>();
++	private closed = false;
 +	hold(): { controller: AbortController; release(): void } {
 +		const controller = new AbortController();
-+		this.live.add(controller);
++		if (this.closed) controller.abort("aborted");
++		else this.live.add(controller);
 +		return { controller, release: () => void this.live.delete(controller) };
++	}
++	abortAll(): void {
++		for (const c of [...this.live]) c.abort("aborted");
++	}
++	/** At shutdown: abort the held requests and every later one at once. */
++	close(): void {
++		this.closed = true;
++		this.abortAll();
 +	}
 +}
 +
-+/** Await the policy's hook for one request. Never rejects; never waits for the hook after the timeout. */
++/** Await the policy's hook for one request. Never rejects; never waits for the hook after an abort or the timeout. */
 +export async function holdRequest(
 +	payload: unknown,
 +	info: Omit<RequestInfo, "signal">,
 +	hooks: RequestHooks,
 +	held: HeldRequests,
-+	_outer: AbortSignal | undefined,
++	outer: AbortSignal | undefined,
 +	clock: Clock,
 +): Promise<{ payload: unknown; outcome?: HookOutcome; waitedMs: number }> {
 +	const hook = hooks.beforeRequest;
@@ -431,8 +506,12 @@ index 0000000..4804f8c
 +	const start = clock.now();
 +	const done = (outcome?: HookOutcome, p: unknown = payload) => ({ payload: p, outcome, waitedMs: clock.now() - start });
 +	const { controller: ac, release } = held.hold();
++	const onOuter = () => ac.abort("aborted");
++	if (outer?.aborted) onOuter();
++	else outer?.addEventListener("abort", onOuter, { once: true });
 +	const cancel = clock.setTimer(() => ac.abort("timeout"), hookTimeout(hooks.hookTimeoutMs));
 +	try {
++		if (ac.signal.aborted) return done(ac.signal.reason === "timeout" ? "timeout" : "aborted");
 +		const stopped = new Promise<HookOutcome>((r) =>
 +			ac.signal.addEventListener("abort", () => r(ac.signal.reason === "timeout" ? "timeout" : "aborted"), { once: true }),
 +		);
@@ -445,6 +524,7 @@ index 0000000..4804f8c
 +		return r.ok ? done(undefined, r.p === undefined ? payload : r.p) : done("error");
 +	} finally {
 +		cancel();
++		outer?.removeEventListener("abort", onOuter);
 +		release();
 +	}
 +}

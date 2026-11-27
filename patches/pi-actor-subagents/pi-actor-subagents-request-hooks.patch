@@ -225,14 +225,21 @@ index 0000000..657ed81
 +});
 diff --git a/extensions/actor-subagents/request-hooks.test.ts b/extensions/actor-subagents/request-hooks.test.ts
 new file mode 100644
-index 0000000..034e438
+index 0000000..04b6a19
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.test.ts
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,156 @@
 +/** Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. */
 +import { test } from "node:test";
 +import assert from "node:assert/strict";
-+import { HeldRequests, holdRequest, type Clock, type RequestHooks } from "./request-hooks.ts";
++import {
++	DEFAULT_HOOK_TIMEOUT_MS,
++	HeldRequests,
++	holdRequest,
++	MAX_TIMER_MS,
++	type Clock,
++	type RequestHooks,
++} from "./request-hooks.ts";
 +import type { RequestInfo } from "./api.ts";
 +
 +/** A clock whose time and timers the test drives. */
@@ -311,12 +318,79 @@ index 0000000..034e438
 +	assert.equal(r.waitedMs, 0);
 +	assert.equal(c.timers.length, 0);
 +});
++
++/** A hook the test settles, and the signal it was handed. */
++function pendingHook() {
++	let resolve!: (p: unknown) => void;
++	const calls: RequestInfo[] = [];
++	const hooks: RequestHooks = {
++		beforeRequest(_p, i) {
++			calls.push(i);
++			return new Promise((r) => {
++				resolve = r;
++			});
++		},
++	};
++	return { hooks, calls, resolve: (p: unknown) => resolve(p) };
++}
++
++test("timeout: the signal aborts with reason timeout, the payload proceeds as it was", async () => {
++	const c = fakeClock();
++	const h = pendingHook();
++	const payload = { a: 1 };
++	const p = hold(payload, { ...h.hooks, hookTimeoutMs: 1500 }, undefined, c);
++	assert.equal(c.timers.length, 1);
++	assert.equal(c.timers[0].ms, 1500);
++	await Promise.resolve();
++	c.advance(1500);
++	c.fire();
++	const r = await p;
++	assert.equal(r.outcome, "timeout");
++	assert.equal(r.payload, payload);
++	assert.equal(r.waitedMs, 1500);
++	assert.equal(h.calls[0].signal.aborted, true);
++	assert.equal(h.calls[0].signal.reason, "timeout");
++	// a late resolution changes nothing
++	h.resolve({ late: true });
++	assert.equal((await p).payload, payload);
++});
++
++test("default timeout: an absent or unusable hookTimeoutMs waits 600 000 ms", () => {
++	assert.equal(DEFAULT_HOOK_TIMEOUT_MS, 600_000);
++	for (const hookTimeoutMs of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
++		const c = fakeClock();
++		void hold({}, { ...pendingHook().hooks, hookTimeoutMs }, undefined, c);
++		assert.equal(c.timers[0].ms, 600_000, `hookTimeoutMs ${hookTimeoutMs}`);
++	}
++});
++
++test("timeout cap: Node's largest timer delay, never a longer one (Node turns it into 1 ms)", () => {
++	assert.equal(MAX_TIMER_MS, 2_147_483_647);
++	for (const [hookTimeoutMs, ms] of [
++		[2_147_483_647, 2_147_483_647],
++		[2_147_483_648, 2_147_483_647],
++		[Number.MAX_SAFE_INTEGER, 2_147_483_647],
++		[1500, 1500],
++	]) {
++		const c = fakeClock();
++		void hold({}, { ...pendingHook().hooks, hookTimeoutMs }, undefined, c);
++		assert.equal(c.timers[0].ms, ms, `hookTimeoutMs ${hookTimeoutMs}`);
++	}
++});
++
++test("a resolved hook cancels its timer", async () => {
++	const c = fakeClock();
++	const r = await hold({}, { beforeRequest: async () => ({ b: 2 }) }, undefined, c);
++	assert.deepEqual(r.payload, { b: 2 });
++	assert.equal(c.timers.length, 1);
++	assert.equal(c.timers[0].cancelled, true);
++});
 diff --git a/extensions/actor-subagents/request-hooks.ts b/extensions/actor-subagents/request-hooks.ts
 new file mode 100644
-index 0000000..b385c42
+index 0000000..4804f8c
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.ts
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,57 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. SDK-free: pi's objects
 + * are reached through minimal local shapes, so pi's type drift between releases cannot reach this file.
@@ -327,6 +401,11 @@ index 0000000..b385c42
 +export type RequestHooks = Pick<Accept, "beforeRequest" | "afterResponse" | "hookTimeoutMs">;
 +export type HookOutcome = "timeout" | "error" | "aborted";
 +export type Clock = { now(): number; setTimer(fn: () => void, ms: number): () => void };
++export const DEFAULT_HOOK_TIMEOUT_MS = 600_000;
++/** Node's largest timer delay; it turns a longer one into 1 ms (an immediate timeout). */
++export const MAX_TIMER_MS = 2_147_483_647;
++export const hookTimeout = (ms: number | undefined) =>
++	typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? Math.min(ms, MAX_TIMER_MS) : DEFAULT_HOOK_TIMEOUT_MS;
 +
 +/** The child's held requests; the actor's own stops abort them. */
 +export class HeldRequests {
@@ -338,7 +417,7 @@ index 0000000..b385c42
 +	}
 +}
 +
-+/** Await the policy's hook for one request. Never rejects. */
++/** Await the policy's hook for one request. Never rejects; never waits for the hook after the timeout. */
 +export async function holdRequest(
 +	payload: unknown,
 +	info: Omit<RequestInfo, "signal">,
@@ -352,13 +431,20 @@ index 0000000..b385c42
 +	const start = clock.now();
 +	const done = (outcome?: HookOutcome, p: unknown = payload) => ({ payload: p, outcome, waitedMs: clock.now() - start });
 +	const { controller: ac, release } = held.hold();
++	const cancel = clock.setTimer(() => ac.abort("timeout"), hookTimeout(hooks.hookTimeoutMs));
 +	try {
-+		const r = await (async () => hook.call(hooks, payload, { ...info, signal: ac.signal }))().then(
++		const stopped = new Promise<HookOutcome>((r) =>
++			ac.signal.addEventListener("abort", () => r(ac.signal.reason === "timeout" ? "timeout" : "aborted"), { once: true }),
++		);
++		const call = (async () => hook.call(hooks, payload, { ...info, signal: ac.signal }))().then(
 +			(p) => ({ ok: true as const, p }),
 +			() => ({ ok: false as const }),
 +		);
++		const r = await Promise.race([call, stopped]);
++		if (typeof r === "string") return done(r);
 +		return r.ok ? done(undefined, r.p === undefined ? payload : r.p) : done("error");
 +	} finally {
++		cancel();
 +		release();
 +	}
 +}

@@ -1,5 +1,5 @@
 diff --git a/extensions/actor-subagents/api.ts b/extensions/actor-subagents/api.ts
-index dd636b8..7d37643 100644
+index dd636b8..5c5ee33 100644
 --- a/extensions/actor-subagents/api.ts
 +++ b/extensions/actor-subagents/api.ts
 @@ -45,6 +45,20 @@ export type ChildTool = {
@@ -78,19 +78,73 @@ index dd636b8..7d37643 100644
  	/** Throws when a policy is already registered; the returned function unregisters this one. */
  	registerSpawnPolicy(fn: SpawnPolicy): () => void;
  	subscribe(l: (e: ApiEvent) => void): () => void;
+@@ -148,6 +198,11 @@ export interface InstalledApi extends SubagentsApiV1 {
+ 	/** The registered policy, read by the spawner on every spawn. */
+ 	spawnPolicy(): SpawnPolicy | undefined;
+ 	rebind(deps: ApiDeps): void;
++	/**
++	 * Local patch (request-hooks): hand an API-only event (not the engine log) to every subscriber; a listener's
++	 * failure stays its own. Absent on an object an older build installed (/reload keeps it): call `api.emit?.(e)`.
++	 */
++	emit(e: ApiEvent): void;
+ }
+ 
+ type AssistantLike = { role?: string; timestamp?: number; usage?: { cost?: { total?: number } } };
+@@ -174,6 +229,8 @@ export function agentInfo(rec: AgentRecord, status: AgentStatus, now: number): A
+ function makeApi(initial: ApiDeps): InstalledApi {
+ 	let deps = initial;
+ 	let policy: SpawnPolicy | undefined;
++	// Local patch (request-hooks): the subscribers of the API-only events; they outlive a rebind.
++	const extra = new Set<(e: ApiEvent) => void>();
+ 	return {
+ 		version: 1,
+ 		registerSpawnPolicy(fn) {
+@@ -183,13 +240,28 @@ function makeApi(initial: ApiDeps): InstalledApi {
+ 				if (policy === fn) policy = undefined;
+ 			};
+ 		},
+-		subscribe: (l) =>
+-			deps.engine.subscribe((e) => {
++		subscribe: (l) => {
++			const off = deps.engine.subscribe((e) => {
+ 				if (e.type === "attach" || e.type === "spawn") {
+ 					if (e.type === "spawn" && deps.engine.get(e.name)?.pending) return;
+ 					l({ type: "spawn", name: e.name, by: e.by, parent: e.by, childSessionId: e.childSessionId, ts: e.ts });
+ 				} else l(e);
+-			}),
++			});
++			extra.add(l);
++			return () => {
++				off();
++				extra.delete(l);
++			};
++		},
++		emit(e) {
++			for (const l of [...extra]) {
++				try {
++					l(e);
++				} catch {
++					// a listener's failure stays its own
++				}
++			}
++		},
+ 		retune: (name, t) => deps.retune(name, t),
+ 		async send(to, text, from = "router") {
+ 			const result = await deps.engine.route(from, to, text);
 diff --git a/extensions/actor-subagents/policy-api.test.ts b/extensions/actor-subagents/policy-api.test.ts
 new file mode 100644
-index 0000000..9c9de1e
+index 0000000..657ed81
 --- /dev/null
 +++ b/extensions/actor-subagents/policy-api.test.ts
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,86 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the API surface other extensions copy. The declarations below are
 + * checked by the type check (node's test runner strips types); the tests check the run-time surface.
 + */
 +import { test } from "node:test";
 +import assert from "node:assert/strict";
-+import type { ApiEvent, PolicyResult, RequestInfo, SubagentsApiV1 } from "./api.ts";
++import { installApi, type ApiEvent, type PolicyResult, type RequestInfo, type SubagentsApiV1 } from "./api.ts";
++import { Engine } from "./engine.ts";
 +
 +const info: RequestInfo = { name: "c", model: "test/m", requestId: "r1", signal: new AbortController().signal };
 +
@@ -127,4 +181,45 @@ index 0000000..9c9de1e
 +		["tool_result", "tool_result", "usage", "hook"],
 +	);
 +	assert.equal(v3.policyApi, 3);
++});
++
++const caps = { maxAgents: 8, maxSpawnDepth: 3 };
++const fresh = () => ({}) as Record<string, unknown>;
++const main = {
++	name: "main",
++	model: "test/m",
++	handle: { deliver: async () => {}, abort: async () => {} },
++	spawnedBy: "main",
++	depth: 0,
++	createdAt: 0,
++	turns: 0,
++	lastActivity: 0,
++};
++const usage: ApiEvent = { type: "usage", name: "c", requestId: "r1", input: 1, cacheRead: 0, cacheWrite: 0, output: 1 };
++
++test("emit: API-only events reach subscribers beside the engine's, survive a rebind, stop on unsubscribe", () => {
++	const g = fresh();
++	const engine = new Engine(caps);
++	const api = installApi({ engine, retune: async () => {} }, g);
++	const seen: string[] = [];
++	const off = api.subscribe((e) => seen.push(e.type));
++	engine.addAgent(main);
++	api.emit(usage);
++	installApi({ engine: new Engine(caps), retune: async () => {} }, g);
++	api.emit({ ...usage, requestId: "r2" });
++	off();
++	api.emit({ ...usage, requestId: "r3" });
++	engine.reportError("main", "after");
++	assert.deepEqual(seen, ["spawn", "usage", "usage"]);
++});
++
++test("emit: a throwing listener does not stop the next", () => {
++	const api = installApi({ engine: new Engine(caps), retune: async () => {} }, fresh());
++	const seen: string[] = [];
++	api.subscribe(() => {
++		throw new Error("listener");
++	});
++	api.subscribe((e) => seen.push(e.type));
++	api.emit(usage);
++	assert.deepEqual(seen, ["usage"]);
 +});

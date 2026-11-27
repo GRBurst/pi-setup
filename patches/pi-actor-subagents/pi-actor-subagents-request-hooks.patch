@@ -1,0 +1,130 @@
+diff --git a/extensions/actor-subagents/api.ts b/extensions/actor-subagents/api.ts
+index dd636b8..7d37643 100644
+--- a/extensions/actor-subagents/api.ts
++++ b/extensions/actor-subagents/api.ts
+@@ -45,6 +45,20 @@ export type ChildTool = {
+ 	parameters: Record<string, unknown>;
+ 	execute(input: unknown): Promise<{ text: string; isError?: boolean; terminate?: boolean }>;
+ };
++/**
++ * Local patch (request-hooks, policyApi 3): what a policy's request hook learns about one provider request of a child.
++ */
++export type RequestInfo = {
++	name: string;
++	model: string;
++	/** Unique per provider request of the child; pairs beforeRequest, afterResponse, usage and tool_result. */
++	requestId: string;
++	/**
++	 * Aborts when the child's turn stops (pause, kill, shutdown, pi's own abort) or on the actor's timeout.
++	 * `signal.reason` is the string "timeout" or "aborted" (not a DOMException).
++	 */
++	signal: AbortSignal;
++};
+ export type PolicyResult =
+ 	| {
+ 			model: string;
+@@ -63,6 +77,26 @@ export type PolicyResult =
+ 			childTools?: ChildTool[];
+ 			/** Local patch (spawn-api): the child session's cwd (absolute); default: the host's. */
+ 			cwd?: string;
++			/**
++			 * Local patch (request-hooks, policyApi 3): awaited before each provider request of the child, its
++			 * compaction and branch-summary requests included; the returned payload is the one sent. Aborted (the
++			 * request is not sent, the hook is not awaited) when the child's turn stops; on a timeout or an error the
++			 * request proceeds with the payload as it was. A child with this hook is not cache-warmed. Its summary
++			 * requests also run every child extension's provider hooks (before_provider_request,
++			 * after_provider_response).
++			 */
++			beforeRequest?(payload: unknown, info: RequestInfo): Promise<unknown>;
++			/** Local patch (request-hooks): how long beforeRequest may hold a request; default 600 000 ms. */
++			hookTimeoutMs?: number;
++			/**
++			 * Local patch (request-hooks): called for each HTTP response of a request, error responses and retried
++			 * attempts included (pi >= 1.6.1): 0..n times per requestId; not an end marker (`usage` is).
++			 */
++			afterResponse?(info: { name: string; requestId: string; status: number; headers: Record<string, string> }): void;
++			/** Local patch (request-hooks): false = the child session loads no AGENTS.md/CLAUDE.md context files. */
++			contextFiles?: false;
++			/** Local patch (request-hooks): replaces the spawner's system prompt. */
++			systemPrompt?: string;
+ 	  }
+ 	| { reject: string };
+ export type SpawnPolicy = (a: SpawnArgs, c: Caller) => PolicyResult | Promise<PolicyResult>;
+@@ -90,10 +124,26 @@ export type AgentInfo = {
+  */
+ export type ApiEvent =
+ 	| Exclude<AgentEvent, { type: "spawn" } | { type: "attach" }>
+-	| { type: "spawn"; name: string; by: string; parent: string; childSessionId?: string; ts: number };
++	| { type: "spawn"; name: string; by: string; parent: string; childSessionId?: string; ts: number }
++	/**
++	 * Local patch (request-hooks, policyApi 3): API-only events, each with the requestId of the request it belongs
++	 * to. tool_result: model-issued tool calls only (nested calls are skipped). usage: exactly one per requestId,
++	 * zeros when the request ended without a response; for every turn request of a child, and for the summary
++	 * requests of a child with request hooks (an unhooked child's summary requests emit none). hook: one per
++	 * beforeRequest that timed out, failed or was aborted.
++	 */
++	| { type: "tool_result"; name: string; requestId: string; toolName: string; isError: boolean; command?: string; path?: string }
++	| { type: "usage"; name: string; requestId: string; input: number; cacheRead: number; cacheWrite: number; output: number }
++	| { type: "hook"; name: string; requestId: string; outcome: "timeout" | "error" | "aborted"; waitedMs: number };
+ 
+ export interface SubagentsApiV1 {
+ 	version: 1;
++	/**
++	 * Local patch (request-hooks): 3 = the request hooks (beforeRequest, afterResponse, contextFiles, systemPrompt)
++	 * and the tool_result, usage and hook events; absent = 1 or 2. Restart pi after upgrading the actor: /reload
++	 * keeps the object an older build installed.
++	 */
++	policyApi?: number;
+ 	/** Throws when a policy is already registered; the returned function unregisters this one. */
+ 	registerSpawnPolicy(fn: SpawnPolicy): () => void;
+ 	subscribe(l: (e: ApiEvent) => void): () => void;
+diff --git a/extensions/actor-subagents/policy-api.test.ts b/extensions/actor-subagents/policy-api.test.ts
+new file mode 100644
+index 0000000..9c9de1e
+--- /dev/null
++++ b/extensions/actor-subagents/policy-api.test.ts
+@@ -0,0 +1,44 @@
++/**
++ * Local patch (request-hooks, policyApi 3): the API surface other extensions copy. The declarations below are
++ * checked by the type check (node's test runner strips types); the tests check the run-time surface.
++ */
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import type { ApiEvent, PolicyResult, RequestInfo, SubagentsApiV1 } from "./api.ts";
++
++const info: RequestInfo = { name: "c", model: "test/m", requestId: "r1", signal: new AbortController().signal };
++
++const accepted: PolicyResult = {
++	model: "test/m",
++	thinkingLevel: "low",
++	async beforeRequest(payload: unknown, i: RequestInfo) {
++		return i.requestId ? payload : undefined;
++	},
++	hookTimeoutMs: 1000,
++	afterResponse(r: { name: string; requestId: string; status: number; headers: Record<string, string> }) {
++		void r;
++	},
++	contextFiles: false,
++	systemPrompt: "lean",
++};
++
++const events: ApiEvent[] = [
++	{ type: "tool_result", name: "c", requestId: "r1", toolName: "bash", isError: false, command: "ls" },
++	{ type: "tool_result", name: "c", requestId: "r1", toolName: "read", isError: true, path: "a.ts" },
++	{ type: "usage", name: "c", requestId: "r1", input: 1, cacheRead: 2, cacheWrite: 3, output: 4 },
++	{ type: "hook", name: "c", requestId: "r1", outcome: "timeout", waitedMs: 5 },
++];
++
++const v3: Pick<SubagentsApiV1, "policyApi"> = { policyApi: 3 };
++
++test("the API-3 declarations: a request-hook policy, the new events, policyApi", async () => {
++	assert.ok(!("reject" in accepted));
++	if ("reject" in accepted) return;
++	const payload = { model: "m" };
++	assert.equal(await accepted.beforeRequest?.(payload, info), payload);
++	assert.deepEqual(
++		events.map((e) => e.type),
++		["tool_result", "tool_result", "usage", "hook"],
++	);
++	assert.equal(v3.policyApi, 3);
++});

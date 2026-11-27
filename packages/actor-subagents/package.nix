@@ -1,4 +1,4 @@
-# pi-actor-subagents with two local patches, applied in this order:
+# pi-actor-subagents with three local patches, applied in this order:
 #
 # - spawn-policy: the stable `globalThis.__subagentsApi_v1` (api.ts) other extensions drive: a
 #   spawn-policy hook (model, effort, brief, tools, tool guard), an optional `task` parameter,
@@ -9,6 +9,11 @@
 #   agent: no agent, its spawner included, messages or controls it; no agent preamble in its
 #   system prompt), per-child tools (`childTools`) and cwd from the policy, and tool guards that
 #   may answer with a Promise. `version` stays 1.
+# - request-hooks (spawnPolicyApi 3): per-request hooks from the policy (`beforeRequest`, awaited
+#   before each provider request of a child, its summary requests included, aborted when the
+#   child's turn stops, with a timeout; `afterResponse` per HTTP response), the API-only events
+#   `tool_result`, `usage` and `hook` keyed by the request, and lean children (`contextFiles: false`,
+#   `systemPrompt`). `version` stays 1; `policyApi: 3` on the API object.
 #
 # Upstream appends the agent preamble to pi's system prompt in children (`childPromptOptions`,
 # child-prompt.ts), so a child keeps pi's tools and guidelines sections, where extensions'
@@ -28,6 +33,7 @@
   patches = [
     ../../patches/pi-actor-subagents/pi-actor-subagents-spawn-policy.patch
     ../../patches/pi-actor-subagents/pi-actor-subagents-spawn-api.patch
+    ../../patches/pi-actor-subagents/pi-actor-subagents-request-hooks.patch
   ];
 }).overrideAttrs (old: {
   # The version of __subagentsApi_v1 this build provides, which consumers assert: 1 for the spawn

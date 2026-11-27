@@ -4,6 +4,8 @@
   self,
   home-manager,
   render,
+  # check-only: pi's own flake (pi-request-abort)
+  pi-upstream,
 }: let
   # Disjoint union of check sets: a duplicate check name is an evaluation error.
   union = lib.foldl' (acc: s: let
@@ -119,6 +121,10 @@
           {
             pi = pkgs.pi-coding-agent;
             version = "1.4.0";
+          }
+          {
+            pi = pi-upstream.packages.${pkgs.stdenv.hostPlatform.system}.pi;
+            version = "1.6.1";
           }
         ];
       };

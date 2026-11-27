@@ -90,7 +90,7 @@
 
     checks = forSystems (_: pkgs:
       import ./checks {
-        inherit pkgs self home-manager;
+        inherit pkgs self home-manager pi-upstream;
         inherit (nixpkgs) lib;
         render = renderOf pkgs;
       });

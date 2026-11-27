@@ -223,3 +223,142 @@ index 0000000..657ed81
 +	api.emit(usage);
 +	assert.deepEqual(seen, ["usage"]);
 +});
+diff --git a/extensions/actor-subagents/request-hooks.test.ts b/extensions/actor-subagents/request-hooks.test.ts
+new file mode 100644
+index 0000000..034e438
+--- /dev/null
++++ b/extensions/actor-subagents/request-hooks.test.ts
+@@ -0,0 +1,82 @@
++/** Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. */
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import { HeldRequests, holdRequest, type Clock, type RequestHooks } from "./request-hooks.ts";
++import type { RequestInfo } from "./api.ts";
++
++/** A clock whose time and timers the test drives. */
++function fakeClock() {
++	let t = 1000;
++	const timers: { fn: () => void; ms: number; cancelled: boolean }[] = [];
++	const clock: Clock = {
++		now: () => t,
++		setTimer(fn, ms) {
++			const timer = { fn, ms, cancelled: false };
++			timers.push(timer);
++			return () => {
++				timer.cancelled = true;
++			};
++		},
++	};
++	return {
++		clock,
++		timers,
++		advance(ms: number) {
++			t += ms;
++		},
++		fire() {
++			for (const timer of timers) if (!timer.cancelled) timer.fn();
++		},
++	};
++}
++
++const info = { name: "c", model: "test/m", requestId: "r1" };
++const hold = (payload: unknown, hooks: RequestHooks, outer?: AbortSignal, c = fakeClock(), held = new HeldRequests()) =>
++	holdRequest(payload, info, hooks, held, outer, c.clock);
++
++test("resolved hook: its payload is the one sent, with no outcome", async () => {
++	const seen: RequestInfo[] = [];
++	const out = { rewritten: true };
++	const r = await hold({ a: 1 }, {
++		async beforeRequest(_p, i) {
++			seen.push(i);
++			return out;
++		},
++	});
++	assert.equal(r.payload, out);
++	assert.equal(r.outcome, undefined);
++	assert.equal(seen.length, 1);
++	assert.deepEqual({ ...seen[0], signal: undefined }, { ...info, signal: undefined });
++	assert.ok(seen[0].signal instanceof AbortSignal);
++});
++
++test("a hook resolving undefined keeps the payload, same reference", async () => {
++	const payload = { a: 1 };
++	const r = await hold(payload, { beforeRequest: async () => undefined });
++	assert.equal(r.payload, payload);
++	assert.equal(r.outcome, undefined);
++});
++
++test("rejecting and throwing hooks: payload unchanged, outcome error", async () => {
++	const payload = { a: 1 };
++	const rejected = await hold(payload, { beforeRequest: async () => Promise.reject(new Error("no")) });
++	assert.equal(rejected.payload, payload);
++	assert.equal(rejected.outcome, "error");
++	const thrown = await hold(payload, {
++		beforeRequest: (() => {
++			throw new Error("sync");
++		}) as unknown as RequestHooks["beforeRequest"],
++	});
++	assert.equal(thrown.payload, payload);
++	assert.equal(thrown.outcome, "error");
++});
++
++test("no hook: nothing held, waitedMs 0", async () => {
++	const payload = { a: 1 };
++	const c = fakeClock();
++	const r = await hold(payload, {}, undefined, c);
++	assert.equal(r.payload, payload);
++	assert.equal(r.outcome, undefined);
++	assert.equal(r.waitedMs, 0);
++	assert.equal(c.timers.length, 0);
++});
+diff --git a/extensions/actor-subagents/request-hooks.ts b/extensions/actor-subagents/request-hooks.ts
+new file mode 100644
+index 0000000..b385c42
+--- /dev/null
++++ b/extensions/actor-subagents/request-hooks.ts
+@@ -0,0 +1,45 @@
++/**
++ * Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. SDK-free: pi's objects
++ * are reached through minimal local shapes, so pi's type drift between releases cannot reach this file.
++ */
++import type { PolicyResult, RequestInfo } from "./api.ts";
++
++type Accept = Exclude<PolicyResult, { reject: string }>;
++export type RequestHooks = Pick<Accept, "beforeRequest" | "afterResponse" | "hookTimeoutMs">;
++export type HookOutcome = "timeout" | "error" | "aborted";
++export type Clock = { now(): number; setTimer(fn: () => void, ms: number): () => void };
++
++/** The child's held requests; the actor's own stops abort them. */
++export class HeldRequests {
++	private readonly live = new Set<AbortController>();
++	hold(): { controller: AbortController; release(): void } {
++		const controller = new AbortController();
++		this.live.add(controller);
++		return { controller, release: () => void this.live.delete(controller) };
++	}
++}
++
++/** Await the policy's hook for one request. Never rejects. */
++export async function holdRequest(
++	payload: unknown,
++	info: Omit<RequestInfo, "signal">,
++	hooks: RequestHooks,
++	held: HeldRequests,
++	_outer: AbortSignal | undefined,
++	clock: Clock,
++): Promise<{ payload: unknown; outcome?: HookOutcome; waitedMs: number }> {
++	const hook = hooks.beforeRequest;
++	if (!hook) return { payload, waitedMs: 0 };
++	const start = clock.now();
++	const done = (outcome?: HookOutcome, p: unknown = payload) => ({ payload: p, outcome, waitedMs: clock.now() - start });
++	const { controller: ac, release } = held.hold();
++	try {
++		const r = await (async () => hook.call(hooks, payload, { ...info, signal: ac.signal }))().then(
++			(p) => ({ ok: true as const, p }),
++			() => ({ ok: false as const }),
++		);
++		return r.ok ? done(undefined, r.p === undefined ? payload : r.p) : done("error");
++	} finally {
++		release();
++	}
++}

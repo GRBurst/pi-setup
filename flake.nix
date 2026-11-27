@@ -34,6 +34,9 @@
       url = "github:fdietze/pi-actor-subagents/7ace3f2afd195bd47650da6437742868913c8682";
       flake = false;
     };
+    # Check-only, never in a module or package: pi 1.6.1 (tag v1.6.1) from its own flake, for the
+    # pi-request-abort check, beside nixpkgs' pi-coding-agent.
+    pi-upstream.url = "github:earendil-works/pi/ef4a1cfcca62b77ad3558337ff3e1c7f6beeadfe";
   };
 
   outputs = {
@@ -45,6 +48,7 @@
     pi-session-name,
     pi-claude-auth,
     pi-actor-subagents,
+    pi-upstream,
   }: let
     systems = ["x86_64-linux" "aarch64-linux"];
     forSystems = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});

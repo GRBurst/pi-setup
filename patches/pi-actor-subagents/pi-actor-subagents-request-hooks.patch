@@ -709,10 +709,10 @@ index 0000000..7883d70
 +});
 diff --git a/extensions/actor-subagents/request-hooks.test.ts b/extensions/actor-subagents/request-hooks.test.ts
 new file mode 100644
-index 0000000..5dbd0d3
+index 0000000..0e5366f
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.test.ts
-@@ -0,0 +1,843 @@
+@@ -0,0 +1,868 @@
 +/** Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. */
 +import { test } from "node:test";
 +import assert from "node:assert/strict";
@@ -1541,6 +1541,31 @@ index 0000000..5dbd0d3
 +	x.held.abortAll();
 +});
 +
++// pi also compacts between turns inside a run, where ctx.signal is the run's: the summary's own signal decides its send
++test("summary inside a run: the summary's own signal releases its hold, not the run's", async () => {
++	const x = loaded({ hooks: never });
++	const run = new AbortController();
++	const a = fakeAgent();
++	a.agent.onPayload = (payload: unknown) => x.request(payload, { signal: run.signal });
++	const orig = a.agent.streamFunction;
++	let sent: Promise<unknown> | undefined;
++	a.agent.streamFunction = async (model, context, options) => {
++		sent = options.onPayload({ summary: true });
++		return orig(model, context, options);
++	};
++	hookSummaryStream(a.agent, x.ext.summary);
++	const summary = new AbortController();
++	await a.agent.streamFunction("m", "ctx", { signal: summary.signal });
++	summary.abort();
++	assert.deepEqual(await settles(sent!), { summary: true });
++	assert.deepEqual(
++		x.events.map((e) => (e.type === "hook" ? [e.outcome, e.requestId] : e.type)),
++		[["aborted", "r1"]],
++	);
++	a.settle.resolve({ usage: {} });
++	await tick();
++});
++
 +test("summary end: the open request ends with the summary's usage, once", async () => {
 +	const x = loaded();
 +	await x.request(); // r1: the summary request
@@ -1558,10 +1583,10 @@ index 0000000..5dbd0d3
 +});
 diff --git a/extensions/actor-subagents/request-hooks.ts b/extensions/actor-subagents/request-hooks.ts
 new file mode 100644
-index 0000000..edf6679
+index 0000000..a7f837f
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.ts
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,253 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. SDK-free: pi's objects
 + * are reached through minimal local shapes, so pi's type drift between releases cannot reach this file.
@@ -1721,10 +1746,11 @@ index 0000000..edf6679
 +				requestId = current = d.newId();
 +				open = true;
 +				if (!d.hooks?.beforeRequest) return undefined;
-+				// ctx.signal is undefined outside a run (a summary request): the summary's own signal and the actor's
-+				// stops abort it
++				// a summary request (compaction, branch summary) is held on its own signal: outside a run ctx.signal is
++				// undefined, and inside one (pi compacts between turns) it is the run's, not what decides the summary's send;
++				// the actor's stops abort it either way
 +				const model = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : d.model();
-+				const r = await holdRequest(e.payload, { name: d.name, model, requestId }, d.hooks, d.held, ctx?.signal ?? summarySignal, d.clock);
++				const r = await holdRequest(e.payload, { name: d.name, model, requestId }, d.hooks, d.held, summarySignal ?? ctx?.signal, d.clock);
 +				if (r.outcome) emit({ type: "hook", name: d.name, requestId, outcome: r.outcome, waitedMs: r.waitedMs });
 +				return r.payload;
 +			} catch {

@@ -70,5 +70,20 @@ pkgs.runCommand "pi-actor-subagents-tests" {nativeBuildInputs = [pkgs.nodejs];} 
   grep -qF '.map(piTool)' index.ts
   grep -qF 'persisted(engine.list())' index.ts
 
+  # The request-hooks patch's tests must be part of what ran, and index.ts must hand every child the
+  # request-hook extension (last, so the policy sees the final payload), the policy's context-file
+  # choice, a summary stream for hooked children, and abort held requests on its own stops
+  # (spawnPolicyApi 3). The stop order and the summary stream are tested (managedStops,
+  # request-hooks-sdk); the markers prove the calls.
+  for t in policy-api request-hooks request-policy lean-child request-hooks-sdk; do
+    test -f "$t.test.ts"
+  done
+  grep -qF 'requestHookExtension({' index.ts
+  grep -qF '...hooked.extensions' index.ts
+  grep -qF 'childContextOptions(spec.contextFiles)' index.ts
+  grep -qF 'managedStops(session, held,' index.ts
+  grep -qF 'emit: (e) => api.emit?.(e)' index.ts
+  grep -qF 'if (spec.requestHooks) hookSummaryStream(session.agent, hooked.summary)' index.ts
+
   touch $out
 ''

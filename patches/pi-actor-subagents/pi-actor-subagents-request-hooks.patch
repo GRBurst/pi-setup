@@ -157,6 +157,140 @@ index c02432c..69c92bc 100644
 +): Pick<ConstructorParameters<typeof DefaultResourceLoader>[0], "noContextFiles"> {
 +	return contextFiles === false ? { noContextFiles: true } : {};
 +}
+diff --git a/extensions/actor-subagents/index.ts b/extensions/actor-subagents/index.ts
+index 11f87aa..8958577 100644
+--- a/extensions/actor-subagents/index.ts
++++ b/extensions/actor-subagents/index.ts
+@@ -4,6 +4,7 @@
+  * + commands for the 'main' agent and creates background agents via the SDK.
+  * Design: ../../../DESIGN.md
+  */
++import { randomUUID } from "node:crypto";
+ import * as fs from "node:fs";
+ import * as path from "node:path";
+ import {
+@@ -27,7 +28,7 @@ import {
+ } from "./agent-message.ts";
+ import { renderAgentMessage } from "./agent-message-renderer.ts";
+ import { orderAgents } from "./agent-order.ts";
+-import { childPromptOptions } from "./child-prompt.ts";
++import { childContextOptions, childPromptOptions } from "./child-prompt.ts";
+ import { makeAgentTools } from "./agent-tools.ts";
+ import { installApi, spawnApiDeps } from "./api.ts";
+ import type { AgentHandle } from "./agent-record.ts";
+@@ -59,6 +60,14 @@ import {
+ import { readRoster, subagentsDir, writeRoster } from "./persistence.ts";
+ import { persisted, piTool, sessionCwd } from "./child-tools.ts";
+ import type { ChildTool } from "./api.ts";
++import {
++  type Clock,
++  HeldRequests,
++  hookSummaryStream,
++  managedStops,
++  requestHookExtension,
++  type RequestHooks,
++} from "./request-hooks.ts";
+ import {
+   resolveExplicitModelRef,
+   resolveModelRef,
+@@ -104,6 +113,16 @@ function registerToolTimestamps(pi: ExtensionAPI): void {
+ }
+ 
+ const settingsFile = () => path.join(getAgentDir(), "actor-subagents", "settings.json");
++
++// Local patch (request-hooks): the hold's timer; unref'd so a held request never keeps pi alive.
++const systemClock: Clock = {
++  now: Date.now,
++  setTimer: (fn, ms) => {
++    const t = setTimeout(fn, ms);
++    t.unref?.();
++    return () => clearTimeout(t);
++  },
++};
+ /**
+  * Read this extension's settings, next to pi's own agent config (getAgentDir() honors pi's
+  * agent-dir override, so a test or alternate profile stays self-contained).
+@@ -563,6 +582,8 @@ export default function subagents(pi: ExtensionAPI) {
+       childTools?: ChildTool[];
+       cwd?: string;
+       quiet?: true;
++      requestHooks?: RequestHooks;
++      contextFiles?: false;
+     },
+     existingFile?: string,
+     // Local patch (spawn-api): shadows the host's cwd for everything below.
+@@ -579,6 +600,19 @@ export default function subagents(pi: ExtensionAPI) {
+       realSettings.getGlobalSettings(),
+     );
+     const settings = readSettings();
++    // Local patch (request-hooks): request ids, the policy's hooks and the usage, tool_result and hook events.
++    // `api` is bound below (installApi) and only called once the child runs; `?.`: an older installed API object
++    // (kept over a /reload) has no emit.
++    const held = new HeldRequests();
++    const hooked = requestHookExtension({
++      name: spec.name,
++      model: () => engine.get(spec.name)?.model ?? "",
++      hooks: spec.requestHooks,
++      held,
++      emit: (e) => api.emit?.(e),
++      newId: randomUUID,
++      clock: systemClock,
++    });
+     const loader = new DefaultResourceLoader({
+       cwd,
+       agentDir: realAgentDir,
+@@ -597,8 +631,11 @@ export default function subagents(pi: ExtensionAPI) {
+         { name: "subagent-timestamps", factory: registerToolTimestamps },
+         { name: "subagent-retry-signals", factory: forwardRetrySignals(spec.name) },
+         ...toolGuardExtensions(spec.toolGuard),
++        // last: the policy sees and owns the final payload
++        ...hooked.extensions,
+       ],
+       ...childPromptOptions(spec.name, spec.systemPrompt, spec.spawnedBy, spec.quiet === true),
++      ...childContextOptions(spec.contextFiles),
+     });
+     await loader.reload();
+     // Project settings ride along as overrides (the in-memory manager only seeds the global
+@@ -646,6 +683,9 @@ export default function subagents(pi: ExtensionAPI) {
+       sessionManager: sm,
+       settingsManager: childSettings,
+     });
++    // Local patch (request-hooks): compaction and branch summaries through the hooks, for hooked children only (a
++    // policy that holds requests must see every one; an unhooked child's summaries stay pi's own).
++    if (spec.requestHooks) hookSummaryStream(session.agent, hooked.summary);
+     // SDK sessions do not start extension lifecycles until the host explicitly binds them.
+     // Children's extensions run unattended, with their footer statuses captured
+     // (bind-headless-extensions.ts).
+@@ -659,6 +699,13 @@ export default function subagents(pi: ExtensionAPI) {
+       // Writes arrive outside any tool call (job timers, session_start), so redraw here.
+       updateStatus();
+     });
++    // Local patch (request-hooks): both stops release held requests (managedStops).
++    const stops = managedStops(session, held, async () => {
++      const runner = session.extensionRunner;
++      if (runner.hasHandlers("session_shutdown")) {
++        await runner.emit({ type: "session_shutdown", reason: "quit" });
++      }
++    });
+     const managedSession: SessionLike = {
+       sendAgentMessage: (message, options) =>
+         session.sendCustomMessage(toCustomAgentMessage(message), {
+@@ -678,13 +725,8 @@ export default function subagents(pi: ExtensionAPI) {
+       },
+       sendUserMessage: (text) =>
+         session.sendUserMessage(text, { deliverAs: "steer" }),
+-      abort: () => session.abort(),
+-      shutdown: async () => {
+-        const runner = session.extensionRunner;
+-        if (runner.hasHandlers("session_shutdown")) {
+-          await runner.emit({ type: "session_shutdown", reason: "quit" });
+-        }
+-      },
++      abort: stops.abort,
++      shutdown: stops.shutdown,
+       dispose: () => session.dispose(),
+       get thinkingLevel() {
+         return session.thinkingLevel;
 diff --git a/extensions/actor-subagents/lean-child.test.ts b/extensions/actor-subagents/lean-child.test.ts
 new file mode 100644
 index 0000000..5df042b

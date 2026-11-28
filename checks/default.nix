@@ -120,7 +120,7 @@
         pis = [
           {
             pi = pkgs.pi-coding-agent;
-            version = "1.4.0";
+            version = "1.6.0";
           }
           {
             pi = pi-upstream.packages.${pkgs.stdenv.hostPlatform.system}.pi;

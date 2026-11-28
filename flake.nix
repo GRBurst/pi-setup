@@ -3,9 +3,9 @@
 
   inputs = {
     # Pinned revisions; consumers `follows` their own.
-    nixpkgs.url = "github:NixOS/nixpkgs/31ecbaca1bdefa45dffc409f0250bd8039ea0010";
+    nixpkgs.url = "github:NixOS/nixpkgs/58d0d3e9d527ca7263be6a45d1f86eacdc700dab";
     home-manager = {
-      url = "github:nix-community/home-manager/1e3ebeb683d055d1675d3f64e6d2b186cb2ee504";
+      url = "github:nix-community/home-manager/5f5abf5eb8de62d954232f3797b5bf4505656b91";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     ai-sandbox = {

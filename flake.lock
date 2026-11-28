@@ -95,17 +95,17 @@
     "pi-actor-subagents": {
       "flake": false,
       "locked": {
-        "lastModified": 1793715349,
-        "narHash": "sha256-rCNjkvkdfD8mcDLpVygRDLnk3FQpbqPWBgKO5rgdPG0=",
+        "lastModified": 1795787674,
+        "narHash": "sha256-P/pMz8WGiaOUP4MwzN6rF2YypiCnMlf4rdvlROq684E=",
         "owner": "fdietze",
         "repo": "pi-actor-subagents",
-        "rev": "7ace3f2afd195bd47650da6437742868913c8682",
+        "rev": "6fa47dad8e66bca3e5cf0fcb94fde771e3536637",
         "type": "github"
       },
       "original": {
         "owner": "fdietze",
         "repo": "pi-actor-subagents",
-        "rev": "7ace3f2afd195bd47650da6437742868913c8682",
+        "rev": "6fa47dad8e66bca3e5cf0fcb94fde771e3536637",
         "type": "github"
       }
     },

@@ -31,7 +31,7 @@
     # Upstream of the patched actor-subagents (`programs.pi.actorSubagents`); the patches under
     # patches/pi-actor-subagents apply to exactly this revision.
     pi-actor-subagents = {
-      url = "github:fdietze/pi-actor-subagents/7ace3f2afd195bd47650da6437742868913c8682";
+      url = "github:fdietze/pi-actor-subagents/6fa47dad8e66bca3e5cf0fcb94fde771e3536637";
       flake = false;
     };
     # Check-only, never in a module or package: pi 1.6.1 (tag v1.6.1) from its own flake, for the

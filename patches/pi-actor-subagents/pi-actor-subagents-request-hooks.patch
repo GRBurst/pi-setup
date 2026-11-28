@@ -225,10 +225,10 @@ index 0000000..657ed81
 +});
 diff --git a/extensions/actor-subagents/request-hooks.test.ts b/extensions/actor-subagents/request-hooks.test.ts
 new file mode 100644
-index 0000000..2f83682
+index 0000000..427d0ec
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.test.ts
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,416 @@
 +/** Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. */
 +import { test } from "node:test";
 +import assert from "node:assert/strict";
@@ -238,10 +238,12 @@ index 0000000..2f83682
 +	holdRequest,
 +	managedStops,
 +	MAX_TIMER_MS,
++	requestHookExtension,
++	type RequestHookDeps,
 +	type Clock,
 +	type RequestHooks,
 +} from "./request-hooks.ts";
-+import type { RequestInfo } from "./api.ts";
++import type { ApiEvent, RequestInfo } from "./api.ts";
 +
 +/** A clock whose time and timers the test drives. */
 +function fakeClock() {
@@ -509,17 +511,151 @@ index 0000000..2f83682
 +	await assert.rejects(stops.shutdown(), /body/);
 +	assert.equal(held.hold().controller.signal.aborted, true);
 +});
++
++/** pi's extension registry as far as the request-hook extension uses it. */
++function fakePi() {
++	const handlers = new Map<string, ((e: any, ctx: any) => unknown)[]>();
++	return {
++		handlers,
++		on(event: string, h: (e: any, ctx: any) => unknown) {
++			handlers.set(event, [...(handlers.get(event) ?? []), h]);
++		},
++		/** Runs the event's handlers in order; resolves with their results. */
++		async fire(event: string, e: unknown = {}, ctx: unknown = {}) {
++			const out: unknown[] = [];
++			for (const h of handlers.get(event) ?? []) out.push(await h(e, ctx));
++			return out;
++		},
++	};
++}
++
++/** The extension with a counter for ids, a recorded emit and a fake clock, loaded into a fake pi. */
++function loaded(over: Partial<RequestHookDeps> = {}) {
++	const events: ApiEvent[] = [];
++	let n = 0;
++	const c = fakeClock();
++	const held = new HeldRequests();
++	const deps: RequestHookDeps = {
++		name: "c",
++		model: () => "fallback/m",
++		hooks: undefined,
++		held,
++		emit: (e) => events.push(e),
++		newId: () => `r${++n}`,
++		clock: c.clock,
++		...over,
++	};
++	const ext = requestHookExtension(deps);
++	const pi = fakePi();
++	ext.extensions[0].factory(pi);
++	const request = async (payload: unknown = { p: 1 }, ctx: unknown = { model: { provider: "p", id: "m" } }) =>
++		(await pi.fire("before_provider_request", { type: "before_provider_request", payload }, ctx))[0];
++	return { ext, pi, events, held, clock: c, request };
++}
++
++test("ids are distinct: every request hands beforeRequest a new id, name, model and signal", async () => {
++	for (let n = 1; n <= 20; n++) {
++		const seen: RequestInfo[] = [];
++		const x = loaded({
++			hooks: {
++				async beforeRequest(p, i) {
++					seen.push(i);
++					return { ...(p as object), hooked: i.requestId };
++				},
++			},
++		});
++		const sent: unknown[] = [];
++		for (let k = 0; k < n; k++) sent.push(await x.request({ k }, k % 2 ? {} : { model: { provider: "p", id: "m" } }));
++		const ids = seen.map((i) => i.requestId);
++		assert.equal(new Set(ids).size, n, `n=${n}: ${ids}`);
++		assert.deepEqual(sent, ids.map((id, k) => ({ k, hooked: id })));
++		assert.deepEqual(
++			seen.map((i) => i.model),
++			ids.map((_, k) => (k % 2 ? "fallback/m" : "p/m")),
++		);
++		assert.ok(seen.every((i) => i.name === "c" && i.signal instanceof AbortSignal));
++		assert.deepEqual(
++			x.events.filter((e) => e.type === "hook"),
++			[],
++		);
++	}
++});
++
++test("hook events: one per non-resolved outcome, with the request's id", async () => {
++	const cases: [string, RequestHooks, (x: ReturnType<typeof loaded>, outer: AbortController) => void, string | undefined][] = [
++		["resolve", { beforeRequest: async () => ({ new: 1 }) }, () => {}, undefined],
++		["resolve-undefined", { beforeRequest: async () => undefined }, () => {}, undefined],
++		["reject", { beforeRequest: async () => Promise.reject(new Error("x")) }, () => {}, "error"],
++		["throw", { beforeRequest: (() => { throw new Error("x"); }) as unknown as RequestHooks["beforeRequest"] }, () => {}, "error"],
++		["timeout", never, (x) => x.clock.fire(), "timeout"],
++		["abortAll", never, (x) => x.held.abortAll(), "aborted"],
++		["outer-abort", never, (_, outer) => outer.abort(), "aborted"],
++	];
++	for (const [label, hooks, act, outcome] of cases) {
++		const x = loaded({ hooks });
++		const outer = new AbortController();
++		const payload = { p: 1 };
++		const p = x.request(payload, { signal: outer.signal });
++		await Promise.resolve();
++		act(x, outer);
++		const sent = await settles(p);
++		assert.deepEqual(sent, label === "resolve" ? { new: 1 } : payload, label);
++		assert.deepEqual(
++			x.events.map((e) => (e.type === "hook" ? [e.outcome, e.requestId] : e.type)),
++			outcome ? [[outcome, "r1"]] : [],
++			label,
++		);
++	}
++});
++
++test("no hooks: the handler returns undefined and emits nothing", async () => {
++	const x = loaded();
++	assert.equal(await x.request(), undefined);
++	assert.deepEqual(x.events, []);
++});
++
++test("a throwing ctx getter or emit is contained: payload unchanged, a hook error when emit works", async () => {
++	const throwing = (key: string) =>
++		Object.defineProperty({}, key, {
++			get() {
++				throw new Error("This extension instance is no longer active");
++			},
++		});
++	for (const key of ["signal", "model"]) {
++		const x = loaded({ hooks: { beforeRequest: async () => ({ changed: true }) } });
++		assert.equal(await x.request({ p: 1 }, throwing(key)), undefined, key);
++		assert.deepEqual(
++			x.events.map((e) => (e.type === "hook" ? [e.outcome, e.requestId] : e.type)),
++			[["error", "r1"]],
++			key,
++		);
++	}
++	for (const emit of [
++		() => {
++			throw new Error("listener");
++		},
++		undefined as unknown as RequestHookDeps["emit"],
++	]) {
++		const x = loaded({ hooks: never, emit });
++		const p = x.request({ p: 1 }, {});
++		await Promise.resolve();
++		x.clock.fire();
++		assert.deepEqual(await settles(p), { p: 1 });
++		const y = loaded({ hooks: { beforeRequest: async () => ({ changed: true }) }, emit });
++		assert.equal(await y.request({ p: 1 }, throwing("signal")), undefined);
++	}
++});
 diff --git a/extensions/actor-subagents/request-hooks.ts b/extensions/actor-subagents/request-hooks.ts
 new file mode 100644
-index 0000000..6fc7997
+index 0000000..31151ba
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.ts
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,139 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. SDK-free: pi's objects
 + * are reached through minimal local shapes, so pi's type drift between releases cannot reach this file.
 + */
-+import type { PolicyResult, RequestInfo } from "./api.ts";
++import type { ApiEvent, PolicyResult, RequestInfo } from "./api.ts";
 +
 +type Accept = Exclude<PolicyResult, { reject: string }>;
 +export type RequestHooks = Pick<Accept, "beforeRequest" | "afterResponse" | "hookTimeoutMs">;
@@ -609,4 +745,48 @@ index 0000000..6fc7997
 +			await shutdown();
 +		},
 +	};
++}
++
++type PiLike = { on(event: string, h: (e: any, ctx: any) => unknown): void };
++export type RequestHookDeps = {
++	name: string;
++	model: () => string;
++	hooks: RequestHooks | undefined;
++	held: HeldRequests;
++	emit: (e: ApiEvent) => void;
++	newId: () => string;
++	clock: Clock;
++};
++
++/** One inline child extension: request ids, the hold and its hook events. */
++export function requestHookExtension(d: RequestHookDeps): {
++	extensions: { name: string; factory: (pi: PiLike) => void }[];
++} {
++	// an emit failure (a missing `emit` on an older API object, a throwing listener) never reaches pi
++	const emit = (e: ApiEvent) => {
++		try {
++			d.emit(e);
++		} catch {
++			// contained
++		}
++	};
++	const factory = (pi: PiLike) => {
++		pi.on("before_provider_request", async (e, ctx) => {
++			let requestId: string | undefined;
++			// `ctx.signal` and `ctx.model` throw once the runner is inactive; pi would then send the payload with no
++			// `hook` event
++			try {
++				requestId = d.newId();
++				if (!d.hooks?.beforeRequest) return undefined;
++				const model = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : d.model();
++				const r = await holdRequest(e.payload, { name: d.name, model, requestId }, d.hooks, d.held, ctx?.signal, d.clock);
++				if (r.outcome) emit({ type: "hook", name: d.name, requestId, outcome: r.outcome, waitedMs: r.waitedMs });
++				return r.payload;
++			} catch {
++				if (requestId) emit({ type: "hook", name: d.name, requestId, outcome: "error", waitedMs: 0 });
++				return undefined; // payload unchanged
++			}
++		});
++	};
++	return { extensions: [{ name: "subagent-request-hooks", factory }] };
 +}

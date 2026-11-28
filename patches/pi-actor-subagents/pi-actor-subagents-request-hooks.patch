@@ -1,5 +1,5 @@
 diff --git a/extensions/actor-subagents/api.ts b/extensions/actor-subagents/api.ts
-index dd636b8..5c5ee33 100644
+index dd636b8..62d0a9b 100644
 --- a/extensions/actor-subagents/api.ts
 +++ b/extensions/actor-subagents/api.ts
 @@ -45,6 +45,20 @@ export type ChildTool = {
@@ -90,7 +90,7 @@ index dd636b8..5c5ee33 100644
  }
  
  type AssistantLike = { role?: string; timestamp?: number; usage?: { cost?: { total?: number } } };
-@@ -174,6 +229,8 @@ export function agentInfo(rec: AgentRecord, status: AgentStatus, now: number): A
+@@ -174,8 +229,11 @@ export function agentInfo(rec: AgentRecord, status: AgentStatus, now: number): A
  function makeApi(initial: ApiDeps): InstalledApi {
  	let deps = initial;
  	let policy: SpawnPolicy | undefined;
@@ -98,8 +98,11 @@ index dd636b8..5c5ee33 100644
 +	const extra = new Set<(e: ApiEvent) => void>();
  	return {
  		version: 1,
++		policyApi: 3,
  		registerSpawnPolicy(fn) {
-@@ -183,13 +240,28 @@ function makeApi(initial: ApiDeps): InstalledApi {
+ 			if (policy) throw new Error("a spawn policy is already registered");
+ 			policy = fn;
+@@ -183,13 +241,28 @@ function makeApi(initial: ApiDeps): InstalledApi {
  				if (policy === fn) policy = undefined;
  			};
  		},
@@ -332,10 +335,10 @@ index 0000000..5df042b
 +});
 diff --git a/extensions/actor-subagents/policy-api.test.ts b/extensions/actor-subagents/policy-api.test.ts
 new file mode 100644
-index 0000000..657ed81
+index 0000000..011bd6e
 --- /dev/null
 +++ b/extensions/actor-subagents/policy-api.test.ts
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,96 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the API surface other extensions copy. The declarations below are
 + * checked by the type check (node's test runner strips types); the tests check the run-time surface.
@@ -421,6 +424,16 @@ index 0000000..657ed81
 +	api.subscribe((e) => seen.push(e.type));
 +	api.emit(usage);
 +	assert.deepEqual(seen, ["usage"]);
++});
++
++test("the installed API claims policyApi 3 and keeps it across a rebind", () => {
++	const g = fresh();
++	const api = installApi({ engine: new Engine(caps), retune: async () => {} }, g);
++	assert.equal(api.policyApi, 3);
++	assert.equal(api.version, 1);
++	assert.equal(g.__subagentsApi_v1, api);
++	installApi({ engine: new Engine(caps), retune: async () => {} }, g);
++	assert.equal((g.__subagentsApi_v1 as typeof api).policyApi, 3);
 +});
 diff --git a/extensions/actor-subagents/request-hooks-sdk.test.ts b/extensions/actor-subagents/request-hooks-sdk.test.ts
 new file mode 100644

@@ -34,9 +34,9 @@
       url = "github:fdietze/pi-actor-subagents/6fa47dad8e66bca3e5cf0fcb94fde771e3536637";
       flake = false;
     };
-    # Check-only, never in a module or package: pi 1.6.1 (tag v1.6.1) from its own flake, for the
+    # Check-only, never in a module or package: pi 1.7.0 (tag v1.7.0) from its own flake, for the
     # pi-request-abort check, beside nixpkgs' pi-coding-agent.
-    pi-upstream.url = "github:earendil-works/pi/ef4a1cfcca62b77ad3558337ff3e1c7f6beeadfe";
+    pi-upstream.url = "github:earendil-works/pi/fb0fe823539f6d04850f6e34748c01f01f212e1f";
   };
 
   outputs = {

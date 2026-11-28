@@ -1,5 +1,5 @@
 diff --git a/extensions/actor-subagents/api.ts b/extensions/actor-subagents/api.ts
-index dd636b8..1764a14 100644
+index dd636b8..00b938c 100644
 --- a/extensions/actor-subagents/api.ts
 +++ b/extensions/actor-subagents/api.ts
 @@ -45,6 +45,20 @@ export type ChildTool = {
@@ -23,7 +23,7 @@ index dd636b8..1764a14 100644
  export type PolicyResult =
  	| {
  			model: string;
-@@ -63,6 +77,26 @@ export type PolicyResult =
+@@ -63,6 +77,28 @@ export type PolicyResult =
  			childTools?: ChildTool[];
  			/** Local patch (spawn-api): the child session's cwd (absolute); default: the host's. */
  			cwd?: string;
@@ -31,16 +31,18 @@ index dd636b8..1764a14 100644
 +			 * Local patch (request-hooks, policyApi 3): awaited before each provider request of the child, its
 +			 * compaction and branch-summary requests included; the returned payload is the one sent. Aborted (the
 +			 * request is not sent, the hook is not awaited) when the child's turn stops; on a timeout or an error the
-+			 * request proceeds with the payload as it was. A child with this hook is not cache-warmed. Its summary
-+			 * requests also run every child extension's provider hooks (before_provider_request,
-+			 * after_provider_response).
++			 * request proceeds with the payload as it was. A child with this hook is not cache-warmed.
 +			 */
 +			beforeRequest?(payload: unknown, info: RequestInfo): Promise<unknown>;
 +			/** Local patch (request-hooks): how long beforeRequest may hold a request; default 600 000 ms. */
 +			hookTimeoutMs?: number;
 +			/**
 +			 * Local patch (request-hooks): called for each HTTP response of a request, error responses and retried
-+			 * attempts included (pi >= 1.6.1): 0..n times per requestId; not an end marker (`usage` is).
++			 * attempts included (pi >= 1.6.1; pi 1.3 and 1.4 call it for successful responses only): 0..n times per
++			 * requestId; not an end marker (`usage` is).
++			 *
++			 * With either hook the child's summary requests (compaction, branch summary) pass through the hooks too, and
++			 * they run every child extension's provider hooks (before_provider_request, after_provider_response).
 +			 */
 +			afterResponse?(info: { name: string; requestId: string; status: number; headers: Record<string, string> }): void;
 +			/** Local patch (request-hooks): false = the child session loads no AGENTS.md/CLAUDE.md context files. */
@@ -50,7 +52,7 @@ index dd636b8..1764a14 100644
  	  }
  	| { reject: string };
  export type SpawnPolicy = (a: SpawnArgs, c: Caller) => PolicyResult | Promise<PolicyResult>;
-@@ -90,10 +124,26 @@ export type AgentInfo = {
+@@ -90,10 +126,29 @@ export type AgentInfo = {
   */
  export type ApiEvent =
  	| Exclude<AgentEvent, { type: "spawn" } | { type: "attach" }>
@@ -59,9 +61,12 @@ index dd636b8..1764a14 100644
 +	/**
 +	 * Local patch (request-hooks, policyApi 3): API-only events, each with the requestId of the request it belongs
 +	 * to. tool_result: model-issued tool calls only (nested calls are skipped). usage: exactly one per requestId,
-+	 * zeros when the request ended without a response; for every turn request of a child, and for the summary
-+	 * requests of a child with request hooks (an unhooked child's summary requests emit none). hook: one per
-+	 * beforeRequest that timed out, failed or was aborted.
++	 * zeros when no assistant message ended it (an aborted or retried request, a cache-warming replay); for every
++	 * turn request of a child, and for the summary requests of a child with request hooks (an unhooked child's
++	 * summary requests emit none). Known limit: in a child with afterResponse only (still cache-warmed), a warm
++	 * replay that starts while a summary request is open swaps the two ids' numbers. hook: one per beforeRequest
++	 * that timed out, failed or was aborted. A killed child's events can still arrive after the kill, under its
++	 * name: key on requestId, not on the name (a re-spawn reuses it).
 +	 */
 +	| { type: "tool_result"; name: string; requestId: string; toolName: string; isError: boolean; command?: string; path?: string }
 +	| { type: "usage"; name: string; requestId: string; input: number; cacheRead: number; cacheWrite: number; output: number }
@@ -78,7 +83,7 @@ index dd636b8..1764a14 100644
  	/** Throws when a policy is already registered; the returned function unregisters this one. */
  	registerSpawnPolicy(fn: SpawnPolicy): () => void;
  	subscribe(l: (e: ApiEvent) => void): () => void;
-@@ -148,6 +198,11 @@ export interface InstalledApi extends SubagentsApiV1 {
+@@ -148,6 +203,11 @@ export interface InstalledApi extends SubagentsApiV1 {
  	/** The registered policy, read by the spawner on every spawn. */
  	spawnPolicy(): SpawnPolicy | undefined;
  	rebind(deps: ApiDeps): void;
@@ -90,7 +95,7 @@ index dd636b8..1764a14 100644
  }
  
  type AssistantLike = { role?: string; timestamp?: number; usage?: { cost?: { total?: number } } };
-@@ -174,8 +229,11 @@ export function agentInfo(rec: AgentRecord, status: AgentStatus, now: number): A
+@@ -174,8 +234,11 @@ export function agentInfo(rec: AgentRecord, status: AgentStatus, now: number): A
  function makeApi(initial: ApiDeps): InstalledApi {
  	let deps = initial;
  	let policy: SpawnPolicy | undefined;
@@ -102,7 +107,7 @@ index dd636b8..1764a14 100644
  		registerSpawnPolicy(fn) {
  			if (policy) throw new Error("a spawn policy is already registered");
  			policy = fn;
-@@ -183,13 +241,30 @@ function makeApi(initial: ApiDeps): InstalledApi {
+@@ -183,13 +246,30 @@ function makeApi(initial: ApiDeps): InstalledApi {
  				if (policy === fn) policy = undefined;
  			};
  		},

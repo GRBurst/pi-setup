@@ -131,6 +131,71 @@ index dd636b8..5c5ee33 100644
  		retune: (name, t) => deps.retune(name, t),
  		async send(to, text, from = "router") {
  			const result = await deps.engine.route(from, to, text);
+diff --git a/extensions/actor-subagents/child-prompt.ts b/extensions/actor-subagents/child-prompt.ts
+index c02432c..69c92bc 100644
+--- a/extensions/actor-subagents/child-prompt.ts
++++ b/extensions/actor-subagents/child-prompt.ts
+@@ -12,6 +12,7 @@
+  * alone. The preamble's backbrief waits for a go-ahead and ends every turn with send_message; the
+  * API drives a quiet child and no agent may message it, so that go-ahead would never come.
+  */
++import type { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+ import { agentSystemPrompt } from "./agent-system-prompt.ts";
+ 
+ export interface ChildPromptOptions {
+@@ -28,3 +29,13 @@ export function childPromptOptions(
+ 		appendSystemPromptOverride: (base) => [...base, quiet ? systemPrompt : agentSystemPrompt(name, systemPrompt, spawnedBy)],
+ 	};
+ }
++
++/**
++ * Local patch (request-hooks): a policy's `contextFiles: false` as pi's resource-loader option (pi 1.3 to 1.6.1):
++ * the child loads no AGENTS.md/CLAUDE.md context files.
++ */
++export function childContextOptions(
++	contextFiles: false | undefined,
++): Pick<ConstructorParameters<typeof DefaultResourceLoader>[0], "noContextFiles"> {
++	return contextFiles === false ? { noContextFiles: true } : {};
++}
+diff --git a/extensions/actor-subagents/lean-child.test.ts b/extensions/actor-subagents/lean-child.test.ts
+new file mode 100644
+index 0000000..5df042b
+--- /dev/null
++++ b/extensions/actor-subagents/lean-child.test.ts
+@@ -0,0 +1,33 @@
++import assert from "node:assert/strict";
++import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { test } from "node:test";
++import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
++import { childContextOptions } from "./child-prompt.ts";
++
++// Local patch (request-hooks): a policy's contextFiles: false starts the child without AGENTS.md/CLAUDE.md.
++
++test("contextFiles false asks the loader for no context files; undefined asks nothing", () => {
++	assert.deepEqual(childContextOptions(false), { noContextFiles: true });
++	assert.deepEqual(childContextOptions(undefined), {});
++});
++
++test("pi's resource loader drops the project's AGENTS.md under childContextOptions(false)", async (t) => {
++	const dir = mkdtempSync(join(tmpdir(), "pi-lean-child-"));
++	t.after(() => rmSync(dir, { recursive: true, force: true }));
++	writeFileSync(join(dir, "AGENTS.md"), "# project rules\n");
++	const load = async (contextFiles: false | undefined) => {
++		const loader = new DefaultResourceLoader({
++			cwd: dir,
++			agentDir: dir,
++			settingsManager: SettingsManager.inMemory({}),
++			noExtensions: true,
++			...childContextOptions(contextFiles),
++		});
++		await loader.reload();
++		return loader.getAgentsFiles().agentsFiles.map((f) => f.path);
++	};
++	assert.deepEqual(await load(undefined), [join(dir, "AGENTS.md")], "control: the loader did not find AGENTS.md");
++	assert.deepEqual(await load(false), []);
++});
 diff --git a/extensions/actor-subagents/policy-api.test.ts b/extensions/actor-subagents/policy-api.test.ts
 new file mode 100644
 index 0000000..657ed81

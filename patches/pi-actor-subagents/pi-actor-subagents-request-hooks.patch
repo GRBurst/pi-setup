@@ -1,5 +1,5 @@
 diff --git a/extensions/actor-subagents/api.ts b/extensions/actor-subagents/api.ts
-index dd636b8..62d0a9b 100644
+index dd636b8..1764a14 100644
 --- a/extensions/actor-subagents/api.ts
 +++ b/extensions/actor-subagents/api.ts
 @@ -45,6 +45,20 @@ export type ChildTool = {
@@ -102,7 +102,7 @@ index dd636b8..62d0a9b 100644
  		registerSpawnPolicy(fn) {
  			if (policy) throw new Error("a spawn policy is already registered");
  			policy = fn;
-@@ -183,13 +241,28 @@ function makeApi(initial: ApiDeps): InstalledApi {
+@@ -183,13 +241,30 @@ function makeApi(initial: ApiDeps): InstalledApi {
  				if (policy === fn) policy = undefined;
  			};
  		},
@@ -125,7 +125,9 @@ index dd636b8..62d0a9b 100644
 +		emit(e) {
 +			for (const l of [...extra]) {
 +				try {
-+					l(e);
++					const r: unknown = l(e);
++					// an async listener's rejection too: unhandled, it would end pi's process
++					if (r && typeof (r as PromiseLike<unknown>).then === "function") (r as PromiseLike<unknown>).then(undefined, () => {});
 +				} catch {
 +					// a listener's failure stays its own
 +				}
@@ -335,10 +337,10 @@ index 0000000..5df042b
 +});
 diff --git a/extensions/actor-subagents/policy-api.test.ts b/extensions/actor-subagents/policy-api.test.ts
 new file mode 100644
-index 0000000..011bd6e
+index 0000000..45b8e31
 --- /dev/null
 +++ b/extensions/actor-subagents/policy-api.test.ts
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,124 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the API surface other extensions copy. The declarations below are
 + * checked by the type check (node's test runner strips types); the tests check the run-time surface.
@@ -434,6 +436,34 @@ index 0000000..011bd6e
 +	assert.equal(g.__subagentsApi_v1, api);
 +	installApi({ engine: new Engine(caps), retune: async () => {} }, g);
 +	assert.equal((g.__subagentsApi_v1 as typeof api).policyApi, 3);
++});
++
++/** The unhandled rejections raised while `fn` runs and one macrotask after it. */
++async function unhandled(fn: () => unknown): Promise<unknown[]> {
++	const seen: unknown[] = [];
++	const spy = (r: unknown) => seen.push(r);
++	process.on("unhandledRejection", spy);
++	try {
++		await fn();
++		await new Promise((r) => setTimeout(r, 10));
++	} finally {
++		process.off("unhandledRejection", spy);
++	}
++	return seen;
++}
++
++test("emit: a rejecting async listener is contained (no unhandled rejection)", async () => {
++	const api = installApi({ engine: new Engine(caps), retune: async () => {} }, fresh());
++	const got: ApiEvent[] = [];
++	api.subscribe(async () => {
++		throw new Error("listener async");
++	});
++	api.subscribe((e) => {
++		if (e.type === "usage") got.push(e);
++	});
++	const seen = await unhandled(() => api.emit(events[2]));
++	assert.deepEqual(seen, []);
++	assert.deepEqual(got, [events[2]]);
 +});
 diff --git a/extensions/actor-subagents/request-hooks-sdk.test.ts b/extensions/actor-subagents/request-hooks-sdk.test.ts
 new file mode 100644
@@ -679,10 +709,10 @@ index 0000000..7883d70
 +});
 diff --git a/extensions/actor-subagents/request-hooks.test.ts b/extensions/actor-subagents/request-hooks.test.ts
 new file mode 100644
-index 0000000..6d9e840
+index 0000000..5dbd0d3
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.test.ts
-@@ -0,0 +1,817 @@
+@@ -0,0 +1,843 @@
 +/** Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. */
 +import { test } from "node:test";
 +import assert from "node:assert/strict";
@@ -1122,6 +1152,32 @@ index 0000000..6d9e840
 +	assert.deepEqual(seen, [{ name: "c", requestId: "r1", status: 200, headers: { "x-a": "1" } }]);
 +});
 +
++/** The unhandled rejections raised while `fn` runs and one macrotask after it. */
++async function unhandled(fn: () => Promise<unknown>): Promise<unknown[]> {
++	const seen: unknown[] = [];
++	const spy = (r: unknown) => seen.push(r);
++	process.on("unhandledRejection", spy);
++	try {
++		await fn();
++		await new Promise((r) => setTimeout(r, 10));
++	} finally {
++		process.off("unhandledRejection", spy);
++	}
++	return seen;
++}
++
++test("afterResponse: a rejecting async one is contained (no unhandled rejection)", async () => {
++	const x = loaded({
++		hooks: {
++			async afterResponse() {
++				throw new Error("policy async");
++			},
++		},
++	});
++	await x.request();
++	assert.deepEqual(await unhandled(() => x.pi.fire("after_provider_response", response(200, {}))), []);
++});
++
 +test("usage: an assistant message_end ends its request with its usage; a user one does nothing", async () => {
 +	const x = loaded();
 +	await x.request();
@@ -1502,10 +1558,10 @@ index 0000000..6d9e840
 +});
 diff --git a/extensions/actor-subagents/request-hooks.ts b/extensions/actor-subagents/request-hooks.ts
 new file mode 100644
-index 0000000..f320af9
+index 0000000..edf6679
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.ts
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,252 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. SDK-free: pi's objects
 + * are reached through minimal local shapes, so pi's type drift between releases cannot reach this file.
@@ -1614,6 +1670,11 @@ index 0000000..f320af9
 +	clock: Clock;
 +};
 +
++// An async callback's rejection is contained too: unhandled, it would end pi's process (node >= 15).
++const quiet = (r: unknown) => {
++	if (r && typeof (r as PromiseLike<unknown>).then === "function") (r as PromiseLike<unknown>).then(undefined, () => {});
++};
++
 +/** One inline child extension: request ids, the hold, the response callback, the usage, tool_result and hook events. */
 +export function requestHookExtension(d: RequestHookDeps): {
 +	extensions: { name: string; factory: (pi: PiLike) => void }[];
@@ -1675,7 +1736,8 @@ index 0000000..f320af9
 +		pi.on("after_provider_response", (e) => {
 +			const requestId = id();
 +			try {
-+				d.hooks?.afterResponse?.({ name: d.name, requestId, status: e?.status, headers: e?.headers });
++				const r: unknown = d.hooks?.afterResponse?.({ name: d.name, requestId, status: e?.status, headers: e?.headers });
++				quiet(r);
 +			} catch {
 +				// contained
 +			}

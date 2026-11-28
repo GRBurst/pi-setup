@@ -151,13 +151,15 @@ itself does not need Nix: without Nix, install ai-sandbox with its own installer
   (the upstream suite of the patched build), `typecheck-actor-subagents`,
   `actor-subagents-module`, `npm-deps`, `typecheck-harness`, `pi-request-abort`
   (pi does not send a request a provider hook holds when the turn stops meanwhile,
-  against nixpkgs' pi and the upstream release the input `pi-upstream` pins).
+  against nixpkgs' pi and the upstream release the input `pi-upstream` pins, both Node builds;
+  a Bun-compiled pi is not run here).
 - `formatter.<system>`: Alejandra.
 
 Inputs: `nixpkgs`, `home-manager` (both followed by consumers),
 `ai-sandbox`, and the extension sources `pi-question`, `pi-session-name`,
 `pi-claude-auth` and `pi-actor-subagents` (pinned by revision in the URL, `flake = false`);
-`pi-upstream` (pi's own flake at a release revision) serves the checks only.
+`pi-upstream` (pi's own flake at a release revision) serves the checks only: only they and
+`nix flake archive` fetch it, and a consumer's lock gains its three nodes.
 The `ai-sandbox` input is `github:GRBurst/ai-sandbox`.
 
 ## Options

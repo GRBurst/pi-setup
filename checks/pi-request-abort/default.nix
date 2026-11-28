@@ -8,7 +8,8 @@
 # (a custom provider, not api.anthropic.com, so no message threads). Per pi and transport:
 # - control run: the hook holds and returns, the turn does not stop: the request reaches the server;
 # - abort run: the hook stops the turn: (i) `ctx.signal` aborts and (ii) the server receives nothing.
-# Every miss is reported; any miss fails. Each pi asserts the version it runs.
+# Every miss is reported; any miss fails. Each pi asserts the version it runs. Both pis are Node
+# builds; a Bun-compiled pi binary is not run here.
 {
   pkgs,
   lib,

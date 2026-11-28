@@ -1,5 +1,5 @@
 diff --git a/extensions/actor-subagents/api.ts b/extensions/actor-subagents/api.ts
-index dd636b8..7a4bc65 100644
+index dd636b8..360dc39 100644
 --- a/extensions/actor-subagents/api.ts
 +++ b/extensions/actor-subagents/api.ts
 @@ -45,6 +45,20 @@ export type ChildTool = {
@@ -23,7 +23,7 @@ index dd636b8..7a4bc65 100644
  export type PolicyResult =
  	| {
  			model: string;
-@@ -63,6 +77,30 @@ export type PolicyResult =
+@@ -63,6 +77,32 @@ export type PolicyResult =
  			childTools?: ChildTool[];
  			/** Local patch (spawn-api): the child session's cwd (absolute); default: the host's. */
  			cwd?: string;
@@ -33,10 +33,12 @@ index dd636b8..7a4bc65 100644
 +			 * request is not sent, the hook is not awaited) when the child's turn stops; on a timeout or an error the
 +			 * request proceeds with the payload as it was. A child with this hook is not cache-warmed.
 +			 * A child restored after a pi restart gets no policy call: no request hooks, no context-file choice and
-+			 * no `policyMeta` in `api.list()`.
++			 * no `policyMeta` in `api.list()`. Requests a child extension sends itself without pi's provider hooks
++			 * (no `onPayload`) are neither held nor given a requestId.
 +			 */
 +			beforeRequest?(payload: unknown, info: RequestInfo): Promise<unknown>;
-+			/** Local patch (request-hooks): how long beforeRequest may hold a request; default 600 000 ms. */
++			/** Local patch (request-hooks): how long beforeRequest may hold a request; default 600 000 ms, also
++			 * for a value that is not finite or is 0 or less; longer values are cut to 2 147 483 647 ms. */
 +			hookTimeoutMs?: number;
 +			/**
 +			 * Local patch (request-hooks): called for each HTTP response of a request, error responses and retried
@@ -54,7 +56,7 @@ index dd636b8..7a4bc65 100644
  	  }
  	| { reject: string };
  export type SpawnPolicy = (a: SpawnArgs, c: Caller) => PolicyResult | Promise<PolicyResult>;
-@@ -90,10 +128,29 @@ export type AgentInfo = {
+@@ -90,10 +130,30 @@ export type AgentInfo = {
   */
  export type ApiEvent =
  	| Exclude<AgentEvent, { type: "spawn" } | { type: "attach" }>
@@ -67,7 +69,8 @@ index dd636b8..7a4bc65 100644
 +	 * turn request of a child, and for the summary requests of a child with request hooks (an unhooked child's
 +	 * summary requests emit none). Known limit: in a child with afterResponse only (still cache-warmed), a warm
 +	 * replay that starts while a summary request is open swaps the two ids' numbers. hook: one per beforeRequest
-+	 * that timed out, failed or was aborted. A killed child's events can still arrive after the kill, under its
++	 * that timed out, failed or was aborted (a request a child extension still starts once the child's
++	 * shutdown began is not held: it reports aborted, and pi may still send it). A killed child's events can still arrive after the kill, under its
 +	 * name: key on requestId, not on the name (a re-spawn reuses it).
 +	 */
 +	| { type: "tool_result"; name: string; requestId: string; toolName: string; isError: boolean; command?: string; path?: string }
@@ -85,7 +88,7 @@ index dd636b8..7a4bc65 100644
  	/** Throws when a policy is already registered; the returned function unregisters this one. */
  	registerSpawnPolicy(fn: SpawnPolicy): () => void;
  	subscribe(l: (e: ApiEvent) => void): () => void;
-@@ -148,6 +205,11 @@ export interface InstalledApi extends SubagentsApiV1 {
+@@ -148,6 +208,11 @@ export interface InstalledApi extends SubagentsApiV1 {
  	/** The registered policy, read by the spawner on every spawn. */
  	spawnPolicy(): SpawnPolicy | undefined;
  	rebind(deps: ApiDeps): void;
@@ -97,7 +100,7 @@ index dd636b8..7a4bc65 100644
  }
  
  type AssistantLike = { role?: string; timestamp?: number; usage?: { cost?: { total?: number } } };
-@@ -174,8 +236,11 @@ export function agentInfo(rec: AgentRecord, status: AgentStatus, now: number): A
+@@ -174,8 +239,11 @@ export function agentInfo(rec: AgentRecord, status: AgentStatus, now: number): A
  function makeApi(initial: ApiDeps): InstalledApi {
  	let deps = initial;
  	let policy: SpawnPolicy | undefined;
@@ -109,7 +112,7 @@ index dd636b8..7a4bc65 100644
  		registerSpawnPolicy(fn) {
  			if (policy) throw new Error("a spawn policy is already registered");
  			policy = fn;
-@@ -183,13 +248,30 @@ function makeApi(initial: ApiDeps): InstalledApi {
+@@ -183,13 +251,30 @@ function makeApi(initial: ApiDeps): InstalledApi {
  				if (policy === fn) policy = undefined;
  			};
  		},

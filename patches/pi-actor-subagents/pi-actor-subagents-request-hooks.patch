@@ -1540,3 +1540,209 @@ index 0000000..f320af9
 +		}
 +	};
 +}
+diff --git a/extensions/actor-subagents/request-policy.test.ts b/extensions/actor-subagents/request-policy.test.ts
+new file mode 100644
+index 0000000..df18983
+--- /dev/null
++++ b/extensions/actor-subagents/request-policy.test.ts
+@@ -0,0 +1,115 @@
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import type { RequestInfo, SpawnPolicy } from "./api.ts";
++import { Engine } from "./engine.ts";
++import { createSpawner, type SessionLike } from "./spawner.ts";
++
++// Local patch (request-hooks): the policy's per-request hooks and lean-child fields reach createSession.
++
++/** The smallest session the spawner can wire. */
++function fakeSession(): SessionLike {
++	return {
++		sendAgentMessage: async () => {},
++		sendUserMessage: async () => {},
++		abort: async () => {},
++		shutdown: async () => {},
++		dispose: () => {},
++		thinkingLevel: "off",
++		setModel: async () => {},
++		setThinkingLevel: () => {},
++		subscribe: () => () => {},
++		getToolDefinition: () => undefined,
++		messages: [],
++		getContextUsage: () => undefined,
++	} as Partial<SessionLike> as SessionLike;
++}
++
++type CreateSpec = Parameters<Parameters<typeof createSpawner>[0]["createSession"]>[0];
++
++function setup(policy?: SpawnPolicy) {
++	const engine = new Engine({ maxAgents: 8, maxSpawnDepth: 3 });
++	engine.addAgent({
++		name: "main",
++		model: "fg/main",
++		thinkingLevel: "xhigh",
++		sessionId: "sess-main",
++		handle: { deliver: async () => {}, abort: async () => {} },
++		spawnedBy: "main",
++		depth: 0,
++		createdAt: 0,
++		turns: 0,
++		lastActivity: 0,
++	});
++	const specs: CreateSpec[] = [];
++	const spawner = createSpawner({
++		engine,
++		resolveModel: (ref) => {
++			const [provider, id] = (ref ?? "fg/main").split("/");
++			return { provider: provider ?? "", id: id ?? "", model: { ref } };
++		},
++		createSession: async (spec) => {
++			specs.push(spec);
++			return { session: fakeSession(), sessionId: `sess-${spec.name}` };
++		},
++		...(policy ? { spawnPolicy: () => policy } : {}),
++		cwd: () => "/repo",
++	});
++	return { engine, spawner, specs };
++}
++
++const info: RequestInfo = { name: "w", model: "a/b", requestId: "r1", signal: new AbortController().signal };
++
++test("a policy's request hooks, context-file choice and system prompt reach createSession", async () => {
++	const calls: unknown[][] = [];
++	const decision = {
++		model: "a/b",
++		thinkingLevel: "low" as const,
++		tag: "decision",
++		beforeRequest(payload: unknown, i: RequestInfo) {
++			calls.push(["before", this.tag, payload, i]);
++			return Promise.resolve({ rewritten: payload });
++		},
++		afterResponse(i: { name: string; requestId: string; status: number; headers: Record<string, string> }) {
++			calls.push(["after", this.tag, i]);
++		},
++		hookTimeoutMs: 5,
++		contextFiles: false as const,
++		systemPrompt: "lean",
++	};
++	const { engine, spawner, specs } = setup(() => decision);
++	const r = await spawner.spawnAgent({ name: "w", systemPrompt: "p" }, "main");
++	assert.equal(r.ok, true, r.msg);
++	const spec = specs[0];
++	assert.ok(spec?.requestHooks, "createSession got no requestHooks");
++	assert.equal(spec.requestHooks.hookTimeoutMs, 5);
++	assert.deepEqual(await spec.requestHooks.beforeRequest?.({ x: 1 }, info), { rewritten: { x: 1 } });
++	const response = { name: "w", requestId: "r1", status: 200, headers: { a: "b" } };
++	spec.requestHooks.afterResponse?.(response);
++	assert.deepEqual(calls, [
++		["before", "decision", { x: 1 }, info],
++		["after", "decision", response],
++	]);
++	assert.equal(spec.contextFiles, false);
++	assert.equal(spec.systemPrompt, "lean");
++	assert.equal(engine.get("w")?.systemPrompt, "lean");
++	assert.equal(engine.get("w")?.view?.getSystemPrompt?.(), "lean");
++});
++
++test("a policy without request fields leaves createSession's spec as before", async () => {
++	const { engine, spawner, specs } = setup(() => ({ model: "a/b", thinkingLevel: "low", hookTimeoutMs: 5 }));
++	await spawner.spawnAgent({ name: "w", systemPrompt: "p" }, "main");
++	assert.equal(specs.length, 1);
++	assert.equal("requestHooks" in specs[0], false);
++	assert.equal("contextFiles" in specs[0], false);
++	assert.equal(specs[0].systemPrompt, "p");
++	assert.equal(engine.get("w")?.systemPrompt, "p");
++});
++
++test("without a policy createSession's spec has no request fields", async () => {
++	const { spawner, specs } = setup();
++	await spawner.spawnAgent({ name: "w", systemPrompt: "p" }, "main");
++	assert.equal(specs.length, 1);
++	assert.equal("requestHooks" in specs[0], false);
++	assert.equal("contextFiles" in specs[0], false);
++	assert.equal(specs[0].systemPrompt, "p");
++});
+diff --git a/extensions/actor-subagents/spawner.ts b/extensions/actor-subagents/spawner.ts
+index 77dc853..1224d69 100644
+--- a/extensions/actor-subagents/spawner.ts
++++ b/extensions/actor-subagents/spawner.ts
+@@ -6,6 +6,7 @@
+ import type { ExtensionStatuses } from "./extension-status.ts";
+ import type { RoutedAgentMessage } from "./agent-message.ts";
+ import type { Caller, ChildTool, SpawnPolicy } from "./api.ts";
++import type { RequestHooks } from "./request-hooks.ts";
+ import { formatStatusDetail, type StopReason } from "./agent-status.ts";
+ import type { AgentHandle, AgentRecord, AgentView } from "./agent-record.ts";
+ import type { Engine } from "./engine.ts";
+@@ -121,6 +122,9 @@ export interface SpawnerDeps {
+ 		cwd?: string;
+ 		/** Local patch (spawn-api): an api.spawn with quiet; the child runs without the agent preamble. */
+ 		quiet?: true;
++		/** Local patch (request-hooks): the policy's per-request hooks and its context-file choice. */
++		requestHooks?: RequestHooks;
++		contextFiles?: false;
+ 	}) => Promise<{ session: SessionLike; sessionFile?: string; sessionId?: string }>;
+ 	/** Called after every relevant activity (e.g. refresh the status footer). */
+ 	onActivity?: () => void;
+@@ -405,6 +409,9 @@ export function createSpawner(deps: SpawnerDeps): Spawner {
+ 		let childTools: ChildTool[] | undefined;
+ 		let childCwd: string | undefined;
+ 		let policyMeta: unknown;
++		let requestHooks: RequestHooks | undefined;
++		let contextFiles: false | undefined;
++		let childPrompt = spec.systemPrompt; // the policy may replace it
+ 		const policy = deps.spawnPolicy?.();
+ 		if (policy) {
+ 			const caller: Caller = {
+@@ -435,6 +442,16 @@ export function createSpawner(deps: SpawnerDeps): Spawner {
+ 			childTools = decision.childTools;
+ 			childCwd = decision.cwd;
+ 			policyMeta = decision.meta;
++			// Local patch (request-hooks): called as the policy's methods (`this` kept)
++			const { beforeRequest, afterResponse } = decision;
++			if (beforeRequest || afterResponse)
++				requestHooks = {
++					...(beforeRequest ? { beforeRequest: (p, i) => beforeRequest.call(decision, p, i) } : {}),
++					...(afterResponse ? { afterResponse: (i) => afterResponse.call(decision, i) } : {}),
++					...(decision.hookTimeoutMs !== undefined ? { hookTimeoutMs: decision.hookTimeoutMs } : {}),
++				};
++			if (decision.contextFiles === false) contextFiles = false;
++			if (typeof decision.systemPrompt === "string") childPrompt = decision.systemPrompt;
+ 		}
+ 
+ 		const resolved = resolveModel(inheritRef);
+@@ -451,7 +468,7 @@ export function createSpawner(deps: SpawnerDeps): Spawner {
+ 		try {
+ 			({ session, sessionFile, sessionId } = await createSession({
+ 				name: spec.name,
+-				systemPrompt: spec.systemPrompt,
++				systemPrompt: childPrompt,
+ 				spawnedBy: spawnerName,
+ 				model: resolved.model,
+ 				thinkingLevel,
+@@ -460,6 +477,8 @@ export function createSpawner(deps: SpawnerDeps): Spawner {
+ 				...(childTools ? { childTools } : {}),
+ 				...(childCwd ? { cwd: childCwd } : {}),
+ 				...(opts.quiet === true ? { quiet: true as const } : {}),
++				...(requestHooks ? { requestHooks } : {}),
++				...(contextFiles === false ? { contextFiles } : {}),
+ 			}));
+ 		} catch (e) {
+ 			if (engine.get(spec.name) === reservation) engine.release(spec.name);
+@@ -478,7 +497,7 @@ export function createSpawner(deps: SpawnerDeps): Spawner {
+ 		}
+ 
+ 		// 3) Complete the reservation (flushes any buffered messages to the session).
+-		const { handle, view, close, reconfigure } = wire(spec.name, session, spec.systemPrompt);
++		const { handle, view, close, reconfigure } = wire(spec.name, session, childPrompt);
+ 		engine.attach(spec.name, {
+ 			model: `${resolved.provider}/${resolved.id}`,
+ 			thinkingLevel: session.thinkingLevel,
+@@ -488,7 +507,7 @@ export function createSpawner(deps: SpawnerDeps): Spawner {
+ 			close,
+ 			reconfigure,
+ 			// Persisted to roster.json so a restart can rebuild this agent.
+-			systemPrompt: spec.systemPrompt,
++			systemPrompt: childPrompt,
+ 			sessionFile,
+ 			sessionId,
+ 			policyMeta,

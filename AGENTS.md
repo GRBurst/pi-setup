@@ -30,8 +30,9 @@ a disjoint union; a duplicate check name is an evaluation error):
   `pi-install-smoke`, `existing-flake-example`);
 - extension: extension code under `node --test`, offline: the repository's own
   (`web-search`) and the patched actor-subagents' upstream suite (`actor-subagents`),
-  its type check (`typecheck-actor-subagents`) and their toolchain (`npm-deps`,
-  `typecheck-harness`);
+  its type check (`typecheck-actor-subagents`), their toolchain (`npm-deps`,
+  `typecheck-harness`) and the pi premise its request hooks rest on, against
+  nixpkgs' pi and the `pi-upstream` release (`pi-request-abort`);
 - shell: `shellcheck` and the workflow lint (`actionlint`);
 - meta: README and docs against the code, the leak scan, formatting,
   `readme-options`, `readme-sections`, `doc-refs`, `boundary` (no host coupling,

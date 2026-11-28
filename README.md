@@ -137,7 +137,7 @@ itself does not need Nix: without Nix, install ai-sandbox with its own installer
 - `packages.<system>.pi-web`: the pi-web web UI package; the service is
   `programs.pi.web` (Nix-only).
 - `packages.<system>.actor-subagents`: the patched pi-actor-subagents
-  (`pi-actor-subagents-patched`, `passthru.spawnPolicyApi = 2`), the default of
+  (`pi-actor-subagents-patched`, `passthru.spawnPolicyApi = 3`), the default of
   `programs.pi.actorSubagents.package` (Nix-only).
 - `apps.<system>.render`: `nix run .#render` writes `package.json` and
   `settings/seed.json` into the checkout.
@@ -149,12 +149,15 @@ itself does not need Nix: without Nix, install ai-sandbox with its own installer
   `render-seed`, `render-package`, `render-nix-only`, `pi-package-manifest`, `pi-install-smoke`,
   `readme-sections`, `existing-flake-example`, `web-search`, `actor-subagents`
   (the upstream suite of the patched build), `typecheck-actor-subagents`,
-  `actor-subagents-module`, `npm-deps`, `typecheck-harness`.
+  `actor-subagents-module`, `npm-deps`, `typecheck-harness`, `pi-request-abort`
+  (pi does not send a request a provider hook holds when the turn stops meanwhile,
+  against nixpkgs' pi and the upstream release the input `pi-upstream` pins).
 - `formatter.<system>`: Alejandra.
 
 Inputs: `nixpkgs`, `home-manager` (both followed by consumers),
 `ai-sandbox`, and the extension sources `pi-question`, `pi-session-name`,
-`pi-claude-auth` and `pi-actor-subagents` (pinned by revision in the URL, `flake = false`).
+`pi-claude-auth` and `pi-actor-subagents` (pinned by revision in the URL, `flake = false`);
+`pi-upstream` (pi's own flake at a release revision) serves the checks only.
 The `ai-sandbox` input is `github:GRBurst/ai-sandbox`.
 
 ## Options
@@ -166,7 +169,7 @@ no default. `extensions.<name>.*` describes one registry entry.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `actorSubagents.enable` | `false` | The patched pi-actor-subagents (Nix-only): background agents spawned and supervised from a pi session, and the `globalThis.__subagentsApi_v1` other extensions drive. Registry entry `actor-subagents`, withheld from children. |
-| `actorSubagents.package` | this repository's `actor-subagents` | The patched source (`packages.<system>.actor-subagents`: the upstream input with the patches under `patches/pi-actor-subagents`). `passthru.spawnPolicyApi` is the API version it provides (1: the spawn policy; 2: also `spawn`/`kill`, child tools and cwd). |
+| `actorSubagents.package` | this repository's `actor-subagents` | The patched source (`packages.<system>.actor-subagents`: the upstream input with the patches under `patches/pi-actor-subagents`). `passthru.spawnPolicyApi` is the API version it provides (1: the spawn policy; 2: also `spawn`/`kill`, child tools and cwd; 3: also per-request hooks, response callback, usage, tool-result and hook events, lean-child options). Restart pi after upgrading it: `/reload` keeps the API object an older build installed. |
 | `actorSubagents.settings` | `{ }` | Merged into `<agentDir>/actor-subagents/settings.json` (`maxAgents`, `maxSpawnDepth`, `errorNoticeGraceMs`). `childExtensions` there is always the registry's (the link paths of the `forChildren` entries; with the economics bridge, the economics module's list); setting it here is an assertion error. |
 | `agentDir` | `".pi/agent"` | pi's agent dir, relative to the home directory (`PI_CODING_AGENT_DIR`). The economics bridge forwards it. |
 | `builtinExtensions.question.enable` | `true` | Link the `question` extension: a question tool in a bottom dock, withheld from children. |

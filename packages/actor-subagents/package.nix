@@ -13,7 +13,9 @@
 #   before each provider request of a child, its summary requests included, aborted when the
 #   child's turn stops, with a timeout; `afterResponse` per HTTP response), the API-only events
 #   `tool_result`, `usage` and `hook` keyed by the request, and lean children (`contextFiles: false`,
-#   `systemPrompt`). `version` stays 1; `policyApi: 3` on the API object.
+#   `systemPrompt`). `version` stays 1; `policyApi: 3` on the API object. A hooked child's summary
+#   requests (compaction, branch summary) pass every child extension's provider hooks and end with a
+#   `usage` event; an unhooked child's summaries stay pi's own and emit no `usage`.
 #
 # Upstream appends the agent preamble to pi's system prompt in children (`childPromptOptions`,
 # child-prompt.ts), so a child keeps pi's tools and guidelines sections, where extensions'

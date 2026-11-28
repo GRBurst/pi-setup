@@ -225,16 +225,17 @@ index 0000000..657ed81
 +});
 diff --git a/extensions/actor-subagents/request-hooks.test.ts b/extensions/actor-subagents/request-hooks.test.ts
 new file mode 100644
-index 0000000..8d0b926
+index 0000000..5e08e90
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.test.ts
-@@ -0,0 +1,651 @@
+@@ -0,0 +1,817 @@
 +/** Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. */
 +import { test } from "node:test";
 +import assert from "node:assert/strict";
 +import {
 +	DEFAULT_HOOK_TIMEOUT_MS,
 +	HeldRequests,
++	hookSummaryStream,
 +	holdRequest,
 +	managedStops,
 +	MAX_TIMER_MS,
@@ -880,12 +881,177 @@ index 0000000..8d0b926
 +		assert.equal(x.pi.handlers.has("cache_warming_decision"), false, JSON.stringify(hooks));
 +	}
 +});
++
++/** A summary link that records its calls. */
++function recordedLink() {
++	const calls: unknown[][] = [];
++	return {
++		calls,
++		link: {
++			begin: (signal?: AbortSignal) => void calls.push(["begin", signal]),
++			end: (usage?: unknown) => void calls.push(["end", usage]),
++		},
++	};
++}
++
++/** A fake agent whose stream function records its options and returns a stream with a result the test settles. */
++function fakeAgent(over: { throws?: boolean; onPayload?: unknown } = {}) {
++	const P = "onPayload" in over ? over.onPayload : () => {};
++	const R = () => {};
++	const seen: any[] = [];
++	let settle!: { resolve(m: unknown): void; reject(e: unknown): void };
++	const result = new Promise((resolve, reject) => {
++		settle = { resolve, reject };
++	});
++	result.catch(() => {});
++	const stream = { result: () => result };
++	const orig = async (_model: unknown, _context: unknown, options?: any) => {
++		seen.push(options);
++		if (over.throws) throw new Error("stream failed");
++		return stream;
++	};
++	const agent: { streamFunction: typeof orig; onPayload?: unknown; onResponse?: unknown } = { streamFunction: orig, onPayload: P, onResponse: R };
++	return { agent, orig, seen, stream, settle, P, R };
++}
++
++const tick = () => new Promise((r) => setImmediate(r));
++
++test("a summary call gets the agent's own onPayload and onResponse, the caller's other options kept", async () => {
++	const a = fakeAgent();
++	const l = recordedLink();
++	hookSummaryStream(a.agent, l.link);
++	const signal = new AbortController().signal;
++	const s = await a.agent.streamFunction("m", "ctx", { signal, sessionId: "s", cacheRetention: "short", reasoning: "low", maxTokens: 9 });
++	assert.equal(s, a.stream);
++	assert.deepEqual(a.seen, [{ signal, sessionId: "s", cacheRetention: "short", reasoning: "low", maxTokens: 9, onPayload: a.P, onResponse: a.R }]);
++	assert.deepEqual(l.calls, [["begin", signal]]);
++	a.settle.resolve({ usage: { input: 4, output: 2 } });
++	await tick();
++	assert.deepEqual(l.calls, [
++		["begin", signal],
++		["end", { input: 4, output: 2 }],
++	]);
++});
++
++test("summary options drop pre-resolved auth", async () => {
++	const a = fakeAgent();
++	hookSummaryStream(a.agent, recordedLink().link);
++	await a.agent.streamFunction("m", "ctx", { apiKey: "k", headers: { authorization: "Bearer k" }, env: { A: "1" }, signal: undefined });
++	const o = a.seen[0];
++	assert.ok(!("apiKey" in o) && !("headers" in o) && !("env" in o), JSON.stringify(o));
++	// the property: every other key passes; the three never do
++	const r = rng(7);
++	const keys = ["apiKey", "headers", "env", "signal", "sessionId", "cacheRetention", "reasoning", "maxTokens", "baseUrl", "x"];
++	for (let k = 0; k < 100; k++) {
++		const b = fakeAgent();
++		hookSummaryStream(b.agent, recordedLink().link);
++		const options = Object.fromEntries(keys.filter(() => r() < 0.5).map((key) => [key, key]));
++		await b.agent.streamFunction("m", "ctx", options);
++		const passed = Object.keys(b.seen[0]).filter((key) => key !== "onPayload" && key !== "onResponse");
++		assert.deepEqual(passed.sort(), Object.keys(options).filter((key) => !["apiKey", "headers", "env"].includes(key)).sort());
++	}
++});
++
++test("a summary ends with end(): once on a rejected result, once on a throwing stream function (rethrown)", async () => {
++	const a = fakeAgent();
++	const l = recordedLink();
++	hookSummaryStream(a.agent, l.link);
++	await a.agent.streamFunction("m", "ctx", {});
++	a.settle.reject(new Error("summary failed"));
++	await tick();
++	assert.deepEqual(l.calls, [
++		["begin", undefined],
++		["end", undefined],
++	]);
++	const b = fakeAgent({ throws: true });
++	const m = recordedLink();
++	hookSummaryStream(b.agent, m.link);
++	await assert.rejects(b.agent.streamFunction("m", "ctx", {}), /stream failed/);
++	assert.deepEqual(m.calls, [
++		["begin", undefined],
++		["end", undefined],
++	]);
++});
++
++test("an agent-loop call (options.onPayload) passes untouched; an agent without onPayload is left alone", async () => {
++	const a = fakeAgent();
++	const l = recordedLink();
++	hookSummaryStream(a.agent, l.link);
++	const options = { onPayload: () => {}, apiKey: "k" };
++	await a.agent.streamFunction("m", "ctx", options);
++	a.settle.resolve({ usage: { input: 1 } });
++	await tick();
++	assert.equal(a.seen[0], options);
++	assert.deepEqual(l.calls, []);
++	const b = fakeAgent({ onPayload: undefined });
++	const m = recordedLink();
++	hookSummaryStream(b.agent, m.link);
++	await b.agent.streamFunction("m", "ctx", { apiKey: "k" });
++	assert.deepEqual(b.seen, [{ apiKey: "k" }]);
++	assert.deepEqual(m.calls, []);
++});
++
++test("summary signal aborts held: the summary's own signal releases its hold, and only while it runs", async () => {
++	const x = loaded({ hooks: never });
++	const a = fakeAgent();
++	// pi's onPayload runs the extension's before_provider_request with no ctx.signal (no run is active)
++	a.agent.onPayload = (payload: unknown) => x.request(payload, {});
++	const orig = a.agent.streamFunction;
++	let sent: Promise<unknown> | undefined;
++	a.agent.streamFunction = async (model, context, options) => {
++		sent = options.onPayload({ summary: true });
++		return orig(model, context, options);
++	};
++	hookSummaryStream(a.agent, x.ext.summary);
++	const summary = new AbortController();
++	await a.agent.streamFunction("m", "ctx", { signal: summary.signal });
++	summary.abort();
++	assert.deepEqual(await settles(sent!), { summary: true });
++	assert.deepEqual(
++		x.events.map((e) => (e.type === "hook" ? [e.outcome, e.requestId] : e.type)),
++		[["aborted", "r1"]],
++	);
++	a.settle.resolve({ usage: { input: 1 } });
++	await tick();
++	// after the summary settled, its signal holds nothing
++	const later = new AbortController();
++	const b = fakeAgent();
++	hookSummaryStream(b.agent, x.ext.summary);
++	await b.agent.streamFunction("m", "ctx", { signal: later.signal });
++	b.settle.resolve({ usage: {} });
++	await tick();
++	let settled = false;
++	void x.request({}, {}).then(() => {
++		settled = true;
++	});
++	await tick();
++	later.abort();
++	await tick();
++	assert.equal(settled, false);
++	x.held.abortAll();
++});
++
++test("summary end: the open request ends with the summary's usage, once", async () => {
++	const x = loaded();
++	await x.request(); // r1: the summary request
++	x.ext.summary.end({ input: 8, cacheRead: 1, cacheWrite: 2, output: 3 });
++	x.ext.summary.end({ input: 99 });
++	await x.request(); // r2: no zero usage for r1
++	await x.pi.fire("agent_end");
++	assert.deepEqual(usages(x.events), [
++		["r1", 8, 1, 2, 3],
++		["r2", 0, 0, 0, 0],
++	]);
++	const y = loaded();
++	y.ext.summary.end({ input: 1 });
++	assert.deepEqual(y.events, []);
++});
 diff --git a/extensions/actor-subagents/request-hooks.ts b/extensions/actor-subagents/request-hooks.ts
 new file mode 100644
-index 0000000..13c60c1
+index 0000000..f320af9
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.ts
-@@ -0,0 +1,203 @@
+@@ -0,0 +1,246 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. SDK-free: pi's objects
 + * are reached through minimal local shapes, so pi's type drift between releases cannot reach this file.
@@ -997,11 +1163,14 @@ index 0000000..13c60c1
 +/** One inline child extension: request ids, the hold, the response callback, the usage, tool_result and hook events. */
 +export function requestHookExtension(d: RequestHookDeps): {
 +	extensions: { name: string; factory: (pi: PiLike) => void }[];
++	/** The summary request in flight (hookSummaryStream): its signal, and its end with the real usage. */
++	summary: SummaryLink;
 +} {
 +	// an emit failure (a missing `emit` on an older API object, a throwing listener) never reaches pi
 +	let current: string | undefined; // the latest provider request: afterResponse, usage
 +	let issuedBy: string | undefined; // the id at the last assistant message_end: the one tool_result carries
 +	let open = false; // current has had no usage yet
++	let summarySignal: AbortSignal | undefined; // the signal of the summary request in flight
 +	const emit = (e: ApiEvent) => {
 +		try {
 +			d.emit(e);
@@ -1037,9 +1206,10 @@ index 0000000..13c60c1
 +				requestId = current = d.newId();
 +				open = true;
 +				if (!d.hooks?.beforeRequest) return undefined;
-+				// ctx.signal is undefined outside a turn (a summary request): the actor's stops abort it
++				// ctx.signal is undefined outside a run (a summary request): the summary's own signal and the actor's
++				// stops abort it
 +				const model = ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : d.model();
-+				const r = await holdRequest(e.payload, { name: d.name, model, requestId }, d.hooks, d.held, ctx?.signal, d.clock);
++				const r = await holdRequest(e.payload, { name: d.name, model, requestId }, d.hooks, d.held, ctx?.signal ?? summarySignal, d.clock);
 +				if (r.outcome) emit({ type: "hook", name: d.name, requestId, outcome: r.outcome, waitedMs: r.waitedMs });
 +				return r.payload;
 +			} catch {
@@ -1087,5 +1257,44 @@ index 0000000..13c60c1
 +		// queue (this extension is the last inline factory; pi lets the last cache_warming_decision result win)
 +		if (d.hooks?.beforeRequest) pi.on("cache_warming_decision", () => ({ action: "stop" }));
 +	};
-+	return { extensions: [{ name: "subagent-request-hooks", factory }] };
++	return {
++		extensions: [{ name: "subagent-request-hooks", factory }],
++		summary: {
++			begin: (signal) => {
++				summarySignal = signal;
++			},
++			end: (u) => {
++				summarySignal = undefined;
++				endOpen(u);
++			},
++		},
++	};
++}
++
++export type SummaryLink = { begin(signal: AbortSignal | undefined): void; end(usage?: Usage): void };
++// pi's compaction and branch-summary requests call `agent.streamFunction` with no onPayload/onResponse; give them the
++// agent's own (the SDK's bindings to the extension runner, so every child extension's provider hooks fire for them),
++// hold them on their own signal and end them with the summary's real usage. Loosely typed on purpose: no SDK import,
++// so pi's type drift cannot reach it.
++// pi >= 1.5 pre-resolves a summary's auth when agent.streamFunction is not its own (marked) function (#11520): drop it,
++// so the runtime resolves auth as for pi's own function (pi 1.3/1.4: as for turn requests).
++type AgentLike = { streamFunction: (model: any, context: any, options?: any) => any; onPayload?: unknown; onResponse?: unknown };
++export function hookSummaryStream(agent: AgentLike, link: SummaryLink): void {
++	const orig = agent.streamFunction;
++	agent.streamFunction = async (model, context, options) => {
++		if (options?.onPayload || !agent.onPayload) return orig(model, context, options); // an agent-loop request: hooked already
++		const { apiKey: _k, headers: _h, env: _e, ...rest } = options ?? {};
++		link.begin(rest.signal);
++		try {
++			const stream = await orig(model, context, { ...rest, onPayload: agent.onPayload, onResponse: agent.onResponse });
++			void Promise.resolve(stream?.result?.()).then(
++				(m: any) => link.end(m?.usage),
++				() => link.end(),
++			);
++			return stream;
++		} catch (err) {
++			link.end();
++			throw err;
++		}
++	};
 +}

@@ -30,8 +30,9 @@ in {
         The patched extension source (`extensions/actor-subagents`). `passthru.spawnPolicyApi` is the
         version of `globalThis.__subagentsApi_v1` it provides (1: the spawn policy; 2: also
         `spawn`/`kill`, child tools and cwd; 3: also per-request hooks, response callback, usage,
-        tool-result and hook events, lean-child options); consumers assert it. Restart pi after
-        upgrading it: `/reload` keeps the API object an older build installed.
+        tool-result and hook events, lean-child options); consumers assert it. Children restored after a
+        pi restart get no policy call (no request hooks). Restart pi after upgrading it: `/reload`
+        keeps the API object an older build installed.
       '';
     };
 

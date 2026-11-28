@@ -1,5 +1,5 @@
 diff --git a/extensions/actor-subagents/api.ts b/extensions/actor-subagents/api.ts
-index dd636b8..00b938c 100644
+index dd636b8..7a4bc65 100644
 --- a/extensions/actor-subagents/api.ts
 +++ b/extensions/actor-subagents/api.ts
 @@ -45,6 +45,20 @@ export type ChildTool = {
@@ -23,7 +23,7 @@ index dd636b8..00b938c 100644
  export type PolicyResult =
  	| {
  			model: string;
-@@ -63,6 +77,28 @@ export type PolicyResult =
+@@ -63,6 +77,30 @@ export type PolicyResult =
  			childTools?: ChildTool[];
  			/** Local patch (spawn-api): the child session's cwd (absolute); default: the host's. */
  			cwd?: string;
@@ -32,6 +32,8 @@ index dd636b8..00b938c 100644
 +			 * compaction and branch-summary requests included; the returned payload is the one sent. Aborted (the
 +			 * request is not sent, the hook is not awaited) when the child's turn stops; on a timeout or an error the
 +			 * request proceeds with the payload as it was. A child with this hook is not cache-warmed.
++			 * A child restored after a pi restart gets no policy call: no request hooks, no context-file choice and
++			 * no `policyMeta` in `api.list()`.
 +			 */
 +			beforeRequest?(payload: unknown, info: RequestInfo): Promise<unknown>;
 +			/** Local patch (request-hooks): how long beforeRequest may hold a request; default 600 000 ms. */
@@ -52,7 +54,7 @@ index dd636b8..00b938c 100644
  	  }
  	| { reject: string };
  export type SpawnPolicy = (a: SpawnArgs, c: Caller) => PolicyResult | Promise<PolicyResult>;
-@@ -90,10 +126,29 @@ export type AgentInfo = {
+@@ -90,10 +128,29 @@ export type AgentInfo = {
   */
  export type ApiEvent =
  	| Exclude<AgentEvent, { type: "spawn" } | { type: "attach" }>
@@ -83,7 +85,7 @@ index dd636b8..00b938c 100644
  	/** Throws when a policy is already registered; the returned function unregisters this one. */
  	registerSpawnPolicy(fn: SpawnPolicy): () => void;
  	subscribe(l: (e: ApiEvent) => void): () => void;
-@@ -148,6 +203,11 @@ export interface InstalledApi extends SubagentsApiV1 {
+@@ -148,6 +205,11 @@ export interface InstalledApi extends SubagentsApiV1 {
  	/** The registered policy, read by the spawner on every spawn. */
  	spawnPolicy(): SpawnPolicy | undefined;
  	rebind(deps: ApiDeps): void;
@@ -95,7 +97,7 @@ index dd636b8..00b938c 100644
  }
  
  type AssistantLike = { role?: string; timestamp?: number; usage?: { cost?: { total?: number } } };
-@@ -174,8 +234,11 @@ export function agentInfo(rec: AgentRecord, status: AgentStatus, now: number): A
+@@ -174,8 +236,11 @@ export function agentInfo(rec: AgentRecord, status: AgentStatus, now: number): A
  function makeApi(initial: ApiDeps): InstalledApi {
  	let deps = initial;
  	let policy: SpawnPolicy | undefined;
@@ -107,7 +109,7 @@ index dd636b8..00b938c 100644
  		registerSpawnPolicy(fn) {
  			if (policy) throw new Error("a spawn policy is already registered");
  			policy = fn;
-@@ -183,13 +246,30 @@ function makeApi(initial: ApiDeps): InstalledApi {
+@@ -183,13 +248,30 @@ function makeApi(initial: ApiDeps): InstalledApi {
  				if (policy === fn) policy = undefined;
  			};
  		},

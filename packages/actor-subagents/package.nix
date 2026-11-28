@@ -16,6 +16,8 @@
 #   `systemPrompt`). `version` stays 1; `policyApi: 3` on the API object. A hooked child's summary
 #   requests (compaction, branch summary) pass every child extension's provider hooks and end with a
 #   `usage` event; an unhooked child's summaries stay pi's own and emit no `usage`.
+#   A child restored after a pi restart gets no policy call: no request hooks, no context-file
+#   choice.
 #
 # Upstream appends the agent preamble to pi's system prompt in children (`childPromptOptions`,
 # child-prompt.ts), so a child keeps pi's tools and guidelines sections, where extensions'

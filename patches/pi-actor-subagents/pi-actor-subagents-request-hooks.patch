@@ -223,6 +223,248 @@ index 0000000..657ed81
 +	api.emit(usage);
 +	assert.deepEqual(seen, ["usage"]);
 +});
+diff --git a/extensions/actor-subagents/request-hooks-sdk.test.ts b/extensions/actor-subagents/request-hooks-sdk.test.ts
+new file mode 100644
+index 0000000..7883d70
+--- /dev/null
++++ b/extensions/actor-subagents/request-hooks-sdk.test.ts
+@@ -0,0 +1,236 @@
++import assert from "node:assert/strict";
++import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { createServer, type IncomingHttpHeaders } from "node:http";
++import type { AddressInfo } from "node:net";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { test, type TestContext } from "node:test";
++import {
++	createAgentSession,
++	DefaultResourceLoader,
++	ModelRuntime,
++	SessionManager,
++	SettingsManager,
++} from "@earendil-works/pi-coding-agent";
++import type { ApiEvent } from "./api.ts";
++import { bindHeadlessExtensions } from "./bind-headless-extensions.ts";
++import {
++	type Clock,
++	HeldRequests,
++	hookSummaryStream,
++	managedStops,
++	requestHookExtension,
++	type RequestHooks,
++} from "./request-hooks.ts";
++
++// Local patch (request-hooks): the request-hook extension inside a real SDK child session (the pi of the npm lock),
++// against an openai-completions provider on localhost. Offline: the fake answers every request with one streamed
++// reply whose usage grows with the request's number (n-th request: 100·n input, n output tokens).
++
++type Seen = { body: Record<string, unknown>; headers: IncomingHttpHeaders };
++
++async function fakeProvider(t: TestContext): Promise<{ seen: Seen[]; url: string }> {
++	const seen: Seen[] = [];
++	const server = createServer((req, res) => {
++		let body = "";
++		req.on("data", (c) => {
++			body += c;
++		});
++		req.on("end", () => {
++			seen.push({ body: JSON.parse(body), headers: req.headers });
++			const n = seen.length;
++			const chunk = (o: unknown) => res.write(`data: ${JSON.stringify(o)}\n\n`);
++			const base = { id: "c", object: "chat.completion.chunk", created: 0, model: "m" };
++			res.writeHead(200, { "content-type": "text/event-stream" });
++			chunk({ ...base, choices: [{ index: 0, delta: { role: "assistant", content: `reply ${n}` }, finish_reason: null }] });
++			chunk({
++				...base,
++				choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
++				usage: { prompt_tokens: 100 * n, completion_tokens: n, total_tokens: 101 * n },
++			});
++			res.end("data: [DONE]\n\n");
++		});
++	});
++	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
++	t.after(() => {
++		server.closeAllConnections();
++		server.close();
++	});
++	return { seen, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1` };
++}
++
++const clock: Clock = {
++	now: () => Date.now(),
++	setTimer: (fn, ms) => {
++		const h = setTimeout(fn, ms);
++		return () => clearTimeout(h);
++	},
++};
++
++/** A child session as index.ts builds it, with the request-hook extension and a fake provider. */
++async function child(t: TestContext, hooks: RequestHooks | undefined) {
++	const provider = await fakeProvider(t);
++	const dir = mkdtempSync(join(tmpdir(), "pi-request-hooks-sdk-"));
++	t.after(() => rmSync(dir, { recursive: true, force: true }));
++	writeFileSync(
++		join(dir, "models.json"),
++		JSON.stringify({
++			providers: { probe: { baseUrl: provider.url, api: "openai-completions", apiKey: "probe-key", models: [{ id: "m" }] } },
++		}),
++	);
++	const modelRuntime = await ModelRuntime.create({
++		authPath: join(dir, "auth.json"),
++		modelsPath: join(dir, "models.json"),
++		allowModelNetwork: false,
++	});
++	const model = modelRuntime.getModel("probe", "m");
++	assert.ok(model, "the fake provider's model is not in the model runtime");
++	const events: ApiEvent[] = [];
++	const held = new HeldRequests();
++	let n = 0;
++	const hooked = requestHookExtension({
++		name: "c",
++		model: () => "probe/m",
++		hooks,
++		held,
++		emit: (e) => events.push(e),
++		newId: () => `r${++n}`,
++		clock,
++	});
++	// keepRecentTokens 1: two short turns are enough for session.compact() to summarize the first
++	const settingsManager = SettingsManager.inMemory({ compaction: { keepRecentTokens: 1 } });
++	const resourceLoader = new DefaultResourceLoader({
++		cwd: dir,
++		agentDir: dir,
++		settingsManager,
++		noExtensions: true,
++		extensionFactories: hooked.extensions,
++	});
++	await resourceLoader.reload();
++	const { session } = await createAgentSession({
++		cwd: dir,
++		agentDir: dir,
++		model,
++		modelRuntime,
++		noTools: "all",
++		resourceLoader,
++		sessionManager: SessionManager.inMemory(dir),
++		settingsManager,
++	});
++	t.after(() => session.dispose());
++	await bindHeadlessExtensions(session, () => {});
++	return { session, seen: provider.seen, events, held, hooked };
++}
++
++test("SDK: a rewriting beforeRequest changes what the provider receives", { timeout: 20_000 }, async (t) => {
++	const infos: { name: string; model: string; requestId: string }[] = [];
++	const c = await child(t, {
++		beforeRequest: async (payload, info) => {
++			infos.push({ name: info.name, model: info.model, requestId: info.requestId });
++			return { ...(payload as object), probe_field: "rewritten" };
++		},
++	});
++	await c.session.prompt("hello");
++	assert.equal(c.seen.length, 1, "the turn request did not reach the provider");
++	assert.equal(c.seen[0].body.probe_field, "rewritten");
++	assert.deepEqual(infos, [{ name: "c", model: "probe/m", requestId: "r1" }]);
++});
++
++/** A hook that holds the request with id `holdId` (all when undefined) until the actor releases it. */
++function holding(holdId?: string) {
++	let entered!: () => void;
++	const reached = new Promise<void>((r) => {
++		entered = r;
++	});
++	const hooks: RequestHooks = {
++		beforeRequest: (payload, info) => {
++			if (holdId !== undefined && info.requestId !== holdId) return Promise.resolve(payload);
++			entered();
++			return new Promise(() => {});
++		},
++	};
++	return { hooks, reached };
++}
++
++const hookEvents = (events: ApiEvent[]) =>
++	events.flatMap((e) => (e.type === "hook" ? [{ requestId: e.requestId, outcome: e.outcome }] : []));
++
++test("SDK: the actor's abort releases a held request and pi does not send it", { timeout: 20_000 }, async (t) => {
++	const h = holding();
++	const c = await child(t, h.hooks);
++	const run = c.session.prompt("hello").catch(() => undefined);
++	await h.reached;
++	await managedStops(c.session, c.held, async () => {}).abort();
++	await run;
++	assert.equal(c.seen.length, 0, "the provider received the request the actor aborted");
++	assert.deepEqual(hookEvents(c.events), [{ requestId: "r1", outcome: "aborted" }]);
++});
++
++test("SDK: the usage event carries the requestId beforeRequest saw", { timeout: 20_000 }, async (t) => {
++	const ids: string[] = [];
++	const c = await child(t, {
++		beforeRequest: async (payload, info) => {
++			ids.push(info.requestId);
++			return payload;
++		},
++	});
++	await c.session.prompt("hello");
++	assert.deepEqual(ids, ["r1"]);
++	assert.deepEqual(
++		c.events.filter((e) => e.type === "usage"),
++		[{ type: "usage", name: "c", requestId: "r1", input: 100, cacheRead: 0, cacheWrite: 0, output: 1 }],
++	);
++});
++
++// keepRecentTokens 1 cuts inside the second turn: pi summarizes the history and the turn prefix, one request each
++test("SDK: compaction summaries are hooked, each with its own requestId and ended by its real usage", { timeout: 20_000 }, async (t) => {
++	const ids: string[] = [];
++	const c = await child(t, {
++		beforeRequest: async (payload, info) => {
++			ids.push(info.requestId);
++			return { ...(payload as object), probe_id: info.requestId };
++		},
++	});
++	hookSummaryStream(c.session.agent, c.hooked.summary);
++	await c.session.prompt("one");
++	await c.session.prompt("two");
++	await c.session.compact();
++	const system = (s: Seen) => String((s.body.messages as { content: unknown }[])[0].content);
++	assert.equal(c.seen.length, 4, "two turn requests and two summary requests");
++	assert.deepEqual(
++		c.seen.map((s) => system(s).startsWith("You are a context summarization assistant")),
++		[false, false, true, true],
++	);
++	assert.deepEqual(ids.slice(0, 2), ["r1", "r2"]);
++	assert.deepEqual(ids.slice(2), ["r3", "r4"], "the compaction requests did not reach the hook");
++	assert.deepEqual(
++		c.seen.map((s) => s.body.probe_id),
++		["r1", "r2", "r3", "r4"],
++	);
++	assert.deepEqual(
++		c.events.filter((e) => e.type === "usage"),
++		[1, 2, 3, 4].map((n) => ({ type: "usage", name: "c", requestId: `r${n}`, input: 100 * n, cacheRead: 0, cacheWrite: 0, output: n })),
++	);
++	// the strip of the summary's pre-resolved auth loses none: pi's stream resolves the same key
++	assert.deepEqual(
++		c.seen.map((s) => s.headers.authorization),
++		Array(4).fill("Bearer probe-key"),
++	);
++});
++
++test("SDK: the actor's abort during a compaction releases the held summary and pi does not send it", { timeout: 20_000 }, async (t) => {
++	const h = holding("r3");
++	const c = await child(t, h.hooks);
++	hookSummaryStream(c.session.agent, c.hooked.summary);
++	await c.session.prompt("one");
++	await c.session.prompt("two");
++	const compaction = c.session.compact().then(
++		() => "done",
++		() => "rejected",
++	);
++	await h.reached;
++	await managedStops(c.session, c.held, async () => {}).abort();
++	assert.equal(await compaction, "rejected");
++	assert.equal(c.seen.length, 2, "the provider received the summary request the actor aborted");
++	assert.deepEqual(hookEvents(c.events), [{ requestId: "r3", outcome: "aborted" }]);
++});
 diff --git a/extensions/actor-subagents/request-hooks.test.ts b/extensions/actor-subagents/request-hooks.test.ts
 new file mode 100644
 index 0000000..5e08e90

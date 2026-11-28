@@ -37,6 +37,7 @@
   ];
 }).overrideAttrs (old: {
   # The version of __subagentsApi_v1 this build provides, which consumers assert: 1 for the spawn
-  # policy, 2 with the spawn-api patch. Through overrideAttrs: applyPatches refuses `passthru`.
-  passthru = (old.passthru or {}) // {spawnPolicyApi = 2;};
+  # policy, 2 with the spawn-api patch, 3 with request-hooks. Through overrideAttrs: applyPatches
+  # refuses `passthru`.
+  passthru = (old.passthru or {}) // {spawnPolicyApi = 3;};
 })

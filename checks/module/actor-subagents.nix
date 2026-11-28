@@ -91,8 +91,8 @@ in
         == "${inputs.pi-actor-subagents}"
         && a.package.drvPath == actorPackage.drvPath
         && a.package.name == "pi-actor-subagents-patched"
-        && (a.package.passthru.spawnPolicyApi or 0) == 2;
-      message = "actor-subagents: the package is the flake's actor-subagents output (pi-actor-subagents-patched, spawnPolicyApi 2), built from the input";
+        && (a.package.passthru.spawnPolicyApi or 0) == 3;
+      message = "actor-subagents: the package is the flake's actor-subagents output (pi-actor-subagents-patched, spawnPolicyApi 3), built from the input";
     }
     {
       condition =

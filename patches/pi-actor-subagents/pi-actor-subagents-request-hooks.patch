@@ -303,10 +303,10 @@ index 11f87aa..8958577 100644
          return session.thinkingLevel;
 diff --git a/extensions/actor-subagents/lean-child.test.ts b/extensions/actor-subagents/lean-child.test.ts
 new file mode 100644
-index 0000000..5df042b
+index 0000000..7b53c01
 --- /dev/null
 +++ b/extensions/actor-subagents/lean-child.test.ts
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,34 @@
 +import assert from "node:assert/strict";
 +import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 +import { tmpdir } from "node:os";
@@ -337,7 +337,8 @@ index 0000000..5df042b
 +		await loader.reload();
 +		return loader.getAgentsFiles().agentsFiles.map((f) => f.path);
 +	};
-+	assert.deepEqual(await load(undefined), [join(dir, "AGENTS.md")], "control: the loader did not find AGENTS.md");
++	// pi also reads the context files of every parent directory: the control asks only for this one
++	assert.ok((await load(undefined)).includes(join(dir, "AGENTS.md")), "control: the loader did not find AGENTS.md");
 +	assert.deepEqual(await load(false), []);
 +});
 diff --git a/extensions/actor-subagents/policy-api.test.ts b/extensions/actor-subagents/policy-api.test.ts
@@ -472,7 +473,7 @@ index 0000000..45b8e31
 +});
 diff --git a/extensions/actor-subagents/request-hooks-sdk.test.ts b/extensions/actor-subagents/request-hooks-sdk.test.ts
 new file mode 100644
-index 0000000..7883d70
+index 0000000..f80ccd7
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks-sdk.test.ts
 @@ -0,0 +1,236 @@
@@ -545,7 +546,7 @@ index 0000000..7883d70
 +	},
 +};
 +
-+/** A child session as index.ts builds it, with the request-hook extension and a fake provider. */
++/** A child session built with the same SDK calls as index.ts (the request-hook extension its only inline factory) and a fake provider. */
 +async function child(t: TestContext, hooks: RequestHooks | undefined) {
 +	const provider = await fakeProvider(t);
 +	const dir = mkdtempSync(join(tmpdir(), "pi-request-hooks-sdk-"));

@@ -84,6 +84,10 @@ pkgs.runCommand "pi-actor-subagents-tests" {nativeBuildInputs = [pkgs.nodejs];} 
   grep -qF 'managedStops(session, held,' index.ts
   grep -qF 'emit: (e) => api.emit?.(e)' index.ts
   grep -qF 'if (spec.requestHooks) hookSummaryStream(session.agent, hooked.summary)' index.ts
+  # the request-hook factory closes the inline list; abort and shutdown both go through managedStops
+  grep --after-context=1 -F '...hooked.extensions,' index.ts | tail -n 1 | grep -qF '],'
+  grep -qF 'abort: stops.abort,' index.ts
+  grep -qF 'shutdown: stops.shutdown,' index.ts
 
   touch $out
 ''

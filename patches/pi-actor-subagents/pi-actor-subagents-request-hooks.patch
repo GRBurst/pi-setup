@@ -225,10 +225,10 @@ index 0000000..657ed81
 +});
 diff --git a/extensions/actor-subagents/request-hooks.test.ts b/extensions/actor-subagents/request-hooks.test.ts
 new file mode 100644
-index 0000000..d62cfe5
+index 0000000..8d0b926
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.test.ts
-@@ -0,0 +1,636 @@
+@@ -0,0 +1,651 @@
 +/** Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. */
 +import { test } from "node:test";
 +import assert from "node:assert/strict";
@@ -865,12 +865,27 @@ index 0000000..d62cfe5
 +		assert.ok([...seen].every((id) => ids.includes(id)), `seed ${seed}: ${steps}: ${[...seen]}`);
 +	}
 +});
++
++test("beforeRequest children stop cache warming; other children keep it", async () => {
++	const before = async () => undefined;
++	const after = () => {};
++	for (const hooks of [{ beforeRequest: before }, { beforeRequest: before, afterResponse: after }]) {
++		const x = loaded({ hooks });
++		assert.equal(x.pi.handlers.get("cache_warming_decision")?.length, 1);
++		for (const e of [{}, { reason: "idle" }, { type: "cache_warming_decision", action: "warm" }])
++			assert.deepEqual(await x.pi.fire("cache_warming_decision", e), [{ action: "stop" }]);
++	}
++	for (const hooks of [{ afterResponse: after }, {}, undefined]) {
++		const x = loaded({ hooks });
++		assert.equal(x.pi.handlers.has("cache_warming_decision"), false, JSON.stringify(hooks));
++	}
++});
 diff --git a/extensions/actor-subagents/request-hooks.ts b/extensions/actor-subagents/request-hooks.ts
 new file mode 100644
-index 0000000..2413dcb
+index 0000000..13c60c1
 --- /dev/null
 +++ b/extensions/actor-subagents/request-hooks.ts
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,203 @@
 +/**
 + * Local patch (request-hooks, policyApi 3): the request hooks a spawn policy gives a child. SDK-free: pi's objects
 + * are reached through minimal local shapes, so pi's type drift between releases cannot reach this file.
@@ -1068,6 +1083,9 @@ index 0000000..2413dcb
 +			});
 +			return undefined;
 +		});
++		// a child with beforeRequest is not cache-warmed: pi's warm replay would reach the hook unseen by the caller's
++		// queue (this extension is the last inline factory; pi lets the last cache_warming_decision result win)
++		if (d.hooks?.beforeRequest) pi.on("cache_warming_decision", () => ({ action: "stop" }));
 +	};
 +	return { extensions: [{ name: "subagent-request-hooks", factory }] };
 +}
